@@ -15,10 +15,11 @@ from ..arxiv import get_metadata as get_arxiv_metadata
 from ..query import (arxiv_to_qs, cas_to_qs, atomic_symbol_to_qs, doi_to_qs,
                      github_to_qs,
                      inchikey_to_qs, issn_to_qs, orcid_to_qs, viaf_to_qs,
-                     q_to_class, random_author, twitter_to_qs,
+                     q_to_class, q_to_dois, random_author, twitter_to_qs,
                      cordis_to_qs, mesh_to_qs, pubmed_to_qs,
                      lipidmaps_to_qs, ror_to_qs, wikipathways_to_qs,
-                     pubchem_to_qs, atomic_number_to_qs)
+                     pubchem_to_qs, atomic_number_to_qs, ncbi_taxon_to_qs,
+                     ncbi_gene_to_qs)
 from ..utils import sanitize_q
 from ..wikipedia import q_to_bibliography_templates
 
@@ -701,6 +702,23 @@ def show_faq():
     return render_template('faq.html')
 
 
+@main.route('/ncbi-gene/<gene>')
+def redirect_ncbi_gene(gene):
+    """Detect and redirect for NCBI gene identifiers.
+
+    Parameters
+    ----------
+    gene : str
+        NCBI gene identifier.
+
+    """
+    qs = ncbi_gene_to_qs(gene)
+    if len(qs) > 0:
+        q = qs[0]
+        return redirect(url_for('app.show_gene', q=q), code=302)
+    return render_template('404.html')
+
+
 @main.route('/github/<github>')
 def redirect_github(github):
     """Detect and redirect for Github user.
@@ -732,7 +750,7 @@ def redirect_inchikey(inchikey):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404_chemical.html', inchikey=inchikey)
 
 
 @main.route('/issn/<issn>')
@@ -904,6 +922,23 @@ def redirect_pubmed(pmid):
     return render_template('404.html')
 
 
+@main.route('/ncbi-taxon/<taxon>')
+def redirect_ncbi_taxon(taxon):
+    """Detect and redirect for NCBI taxon identifiers.
+
+    Parameters
+    ----------
+    taxon : str
+        NCBI taxon identifier.
+
+    """
+    qs = ncbi_taxon_to_qs(taxon)
+    if len(qs) > 0:
+        q = qs[0]
+        return redirect(url_for('app.show_taxon', q=q), code=302)
+    return render_template('404.html')
+
+
 @main.route('/wikipathways/<wpid>')
 def redirect_wikipathways(wpid):
     """Detect and redirect for WikiPathways identifiers.
@@ -1006,6 +1041,26 @@ def show_organization_rss(q):
                         status=200, mimetype="application/rss+xml")
     response.headers["Content-Type"] = "text/xml; charset=utf-8"
     return response
+
+
+@main.route('/organization/' + q1_pattern + '/topic/' + q2_pattern)
+def show_organization_topic(q1, q2):
+    """Return HTML rendering for specific organization and topic.
+
+    Parameters
+    ----------
+    q1 : str
+        Wikidata item identifier for organization.
+    q2 : str
+        Wikidata item identifier for topic
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific organization and topic.
+
+    """
+    return render_template('organization_topic.html', q1=q1, q2=q2, q=q1)
 
 
 @main.route('/organization/' + q_pattern + '/missing')
@@ -1439,6 +1494,19 @@ def show_chemical_empty():
     return render_template('chemical_empty.html')
 
 
+@main.route('/chemical/missing')
+def show_chemicals_missing():
+    """Return rendered HTML index page for missing information for chemicals.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page for missing information for chemicals.
+
+    """
+    return render_template('chemicals_missing.html')
+
+
 @main.route('/chemical-element/' + q_pattern)
 def show_chemical_element(q):
     """Return html render page for specific chemical element.
@@ -1553,6 +1621,77 @@ def show_venue_missing(q):
 
     """
     return render_template('venue_missing.html', q=q)
+
+
+@main.route('/venue/' + q_pattern + '/cito')
+def show_venue_cito(q):
+    """Return HTML rendering for Citation Typing Ontology annotation of citations.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    return render_template('venue_cito.html', q=q)
+
+
+@main.route('/work/' + q_pattern + '/cito')
+def show_work_cito(q):
+    """Return HTML rendering for Citation Typing Ontology annotation of citations.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    return render_template('work_cito.html', q=q)
+
+
+@main.route('/cito/' + q_pattern)
+def show_cito(q):
+    """Return HTML rendering for a specific Citation Typing Ontology intention.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    return render_template('cito.html', q=q)
+
+
+@main.route('/cito/')
+def show_cito_empty():
+    """Return rendered HTML about CiTO annotation in Wikidata.
+
+    Return rendered HTML index page with general info about CiTO annotation
+    in Wikidata.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page with general info about CiTO annotation
+        in Wikidata.
+
+    """
+    return render_template('cito_empty.html')
 
 
 @main.route('/venue/' + q_pattern + '/latest-works/rss')
@@ -1811,7 +1950,11 @@ def show_work(q):
         Rendered HTML page for specific work.
 
     """
-    return render_template('work.html', q=q)
+    try:
+        dois = q_to_dois(q)
+    except Exception:
+        dois = []
+    return render_template('work.html', q=q, dois=dois)
 
 
 @main.route('/work/')
@@ -1857,3 +2000,9 @@ def show_about():
 
     """
     return render_template('about.html')
+
+
+@main.route('/favicon.ico')
+def show_favicon():
+    """Detect and redirect for the favicon.ico."""
+    return redirect(url_for('static', filename='favicon/favicon.ico'))

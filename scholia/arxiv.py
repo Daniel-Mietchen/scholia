@@ -24,12 +24,22 @@ from os import write
 
 import re
 
-from lxml import etree
+try:
+    # lxml can only be loaded into one interpreter per process.
+    # A webservice running uwsgi with multiple interpreters may fail to load
+    # the lxml library.
+    # Workarounds exists https://stackoverflow.com/questions/54092324/ but
+    # it may not be possible to implement.
+    from lxml import etree
+except ImportError:
+    from xml import etree
 
 import requests
 
 
 USER_AGENT = 'Scholia'
+
+ARXIV_URL = 'https://export.arxiv.org/'
 
 
 def get_metadata(arxiv):
@@ -69,12 +79,17 @@ def get_metadata(arxiv):
 
     """
     arxiv = arxiv.strip()
-    url = 'https://arxiv.org/abs/' + arxiv
+    url = ARXIV_URL + '/abs/' + arxiv
     headers = {'User-agent': USER_AGENT}
     response = requests.get(url, headers=headers)
     tree = etree.HTML(response.content)
 
     submissions = tree.xpath('//div[@class="submission-history"]/text()')
+    submissions = [
+        submission
+        for submission in submissions
+        if len(submission.strip()) > 0
+    ]
     datetime_as_string = submissions[-1][5:30]
     isodatetime = parse_datetime(datetime_as_string).isoformat()
 
@@ -128,7 +143,7 @@ def metadata_to_quickstatements(metadata):
 
     References
     ----------
-    - https://tools.wmflabs.org/wikidata-todo/quick_statements.php
+    - https://wikidata-todo.toolforge.org/quick_statements.php
 
     """
     qs = u"CREATE\n"

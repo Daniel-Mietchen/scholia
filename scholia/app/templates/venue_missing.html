@@ -15,7 +15,7 @@ SELECT
 
   # Build URL to the Author disambiguator tool
   (CONCAT(
-      'https://tools.wmflabs.org/author-disambiguator/?doit=Look+for+author&name=',
+      'https://author-disambiguator.toolforge.org/names_oauth.php?doit=Look+for+author&name=',
       ENCODE_FOR_URI(?author)) AS ?resolver_url)
 WITH {
   SELECT (COUNT(?work) as ?count) ?author WHERE {
@@ -50,7 +50,7 @@ WITH {
   WHERE {
     ?work wdt:P1433 wd:{{ q }} .
     OPTIONAL { ?work wdt:P921 ?topic }
-    ?citing_work wdt:P2860 ?work.
+    OPTIONAL { ?citing_work wdt:P2860 ?work. }
   }
   GROUP BY ?work
   ORDER BY DESC(?count)
@@ -61,14 +61,18 @@ WHERE {
   INCLUDE %result
   FILTER (?topics < 2)
   SERVICE wikibase:label {
-    bd:serviceParam wikibase:language "en,da,de,es,fr,jp,nl,no,ru,sv,zh" . } 
+    bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en" . } 
 }
-ORDER BY DESC(?count) DESC (?topics)
+ORDER BY DESC(?count) ?topics
 `
 
   $(document).ready(function() {
       sparqlToDataTable(missingAuthorItemSparql, "#missing-author-item");
-      sparqlToDataTable(missingTopicsSparql, "#missing-topics");
+      sparqlToDataTable(missingTopicsSparql, "#missing-topics", {
+	         linkPrefixes: {
+	             work: "../../work/",
+  	       }
+      });
   });
 </script>
 

@@ -24,48 +24,86 @@ def paper_to_quickstatements(paper):
 
     References
     ----------
-    https://tools.wmflabs.org/wikidata-todo/quick_statements.php
+    https://quickstatements.toolforge.org
 
     Notes
     -----
-    title, authors (list), date, year, language_q, url, full_text_url,
-    published_in_q are recognized.
+    title, authors (list), date, doi, year, language_q, volume, issue, pages,
+    number_of_pages, url, full_text_url, published_in_q are recognized.
 
     `date` takes precedence over `year`.
 
     """
     qs = u("CREATE\n")
 
-    title = escape_string(paper['title'])
-    qs += u('LAST\tLen\t"{}"\n').format(title)
+    if 'title' in paper and paper['title']:
+        title = escape_string(paper['title'])
+        qs += u('LAST\tLen\t"{}"\n').format(title)
 
     # Instance of scientific article
     qs += 'LAST\tP31\tQ13442814\n'
 
     # Title
-    qs += u('LAST\tP1476\ten:"{}"\n').format(title)
+    iso639 = 'en'
+    if 'iso639' in paper:
+        iso639 = paper['iso639']
+    if 'title' in paper and paper['title']:
+        qs += u('LAST\tP1476\t{}:"{}"\n').format(iso639, title)
+
+    # DOI
+    if 'doi' in paper:
+        qs += u('LAST\tP356\t"{}"\n').format(escape_string(paper['doi']))
 
     # Authors
-    for n, author in enumerate(paper['authors'], start=1):
-        qs += u('LAST\tP2093\t"{}"\tP1545\t"{}"\n').format(author, n)
+    if 'authors' in paper:
+        for n, author in enumerate(paper['authors'], start=1):
+            qs += u('LAST\tP2093\t"{}"\tP1545\t"{}"\n').format(author, n)
 
     # Published in
     if 'date' in paper:
         # Day precision
-        qs += 'LAST\tP577\t+{}T00:00:00Z/11\n'.format(paper['date'])
+        if len(paper['date']) == 4:
+            # Only year available
+            qs += 'LAST\tP577\t+{}-00-00T00:00:00Z/9\n'.format(paper['date'])
+        elif len(paper['date']) == 7:
+            # Year and month only
+            qs += 'LAST\tP577\t+{}-00T00:00:00Z/10\n'.format(paper['date'])
+        elif len(paper['date']) == 10:
+            # Year, month and day available
+            qs += 'LAST\tP577\t+{}T00:00:00Z/11\n'.format(paper['date'])
+        else:
+            # Unknown date format
+            pass
+
     elif 'year' in paper:
         # Year precision
-        qs += 'LAST\tP577\t+{}-01-01T00:00:00Z/9\n'.format(paper['year'])
+        qs += 'LAST\tP577\t+{}-00-00T00:00:00Z/9\n'.format(paper['year'])
+
+    # Volume
+    if 'volume' in paper:
+        qs += u('LAST\tP478\t"{}"\n').format(escape_string(paper['volume']))
+
+    # Issue
+    if 'issue' in paper:
+        qs += u('LAST\tP433\t"{}"\n').format(escape_string(paper['issue']))
+
+    if 'pages' in paper:
+        qs += u('LAST\tP304\t"{}"\n').format(escape_string(paper['pages']))
+
+    if 'number_of_pages' in paper:
+        qs += u('LAST\tP1104\t{}\n').format(paper['number_of_pages'])
 
     # Language
     if 'language_q' in paper:
         qs += 'LAST\tP407\t{}\n'.format(paper['language_q'])
 
     # Homepage
-    qs += 'LAST\tP856\t"{}"\n'.format(paper['url'])
+    if 'url' in paper:
+        qs += 'LAST\tP856\t"{}"\n'.format(paper['url'])
 
     # Fulltext URL
-    qs += 'LAST\tP953\t"{}"\n'.format(paper['full_text_url'])
+    if 'full_text_url' in paper:
+        qs += 'LAST\tP953\t"{}"\n'.format(paper['full_text_url'])
 
     # Published in
     if 'published_in_q' in paper and paper['published_in_q']:

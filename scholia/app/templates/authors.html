@@ -20,10 +20,18 @@ WHERE {
 }
 `
 
-  listOfCommonAuthoredWorksSparql = `
-SELECT ?coauthor_count ?work ?workLabel ?authors
+ listOfJointlyAuthoredWorksSparql = `
+SELECT
+  ?coauthor_count
+  ?work ?workLabel
+  ?authors ?authorsUrl
 WITH {
-  SELECT (COUNT(?author) AS ?coauthor_count) ?work (GROUP_CONCAT(?author_label; separator=" // ") AS ?authors) WHERE {
+  SELECT 
+    (COUNT(?author) AS ?coauthor_count)
+    ?work 
+    (GROUP_CONCAT(?author_label; separator=", ") AS ?authors)
+    (GROUP_CONCAT(SUBSTR(STR(?author), 32); separator=",") AS ?authorsUrl)
+  {
     VALUES ?author { {% for q in qs %} wd:{{ q }} {% endfor %} }
     ?work wdt:P50 ?author .
     OPTIONAL { ?author rdfs:label ?author_label . FILTER(LANG(?author_label) = 'en') }
@@ -40,7 +48,7 @@ ORDER BY DESC(?coauthor_count)
 
  $(document).ready(function() {
      sparqlToDataTable(listOfAuthorsSparql, "#list-of-authors");
-     sparqlToDataTable(listOfCommonAuthoredWorksSparql, "#list-of-common-authored-works");
+     sparqlToDataTable(listOfJointlyAuthoredWorksSparql, "#list-of-jointly-authored-works");
  });
 
 
@@ -60,9 +68,9 @@ ORDER BY DESC(?coauthor_count)
 <table class="table table-hover" id="list-of-authors"></table>
 
 
-<h2>List of common authored works</h2>
+<h2>List of jointly authored works</h2>
 
-<table class="table table-hover" id="list-of-common-authored-works"></table>
+<table class="table table-hover" id="list-of-jointly-authored-works"></table>
 
 <h2>Number of works per publication year</h2>
 

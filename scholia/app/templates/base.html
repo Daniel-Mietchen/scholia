@@ -1,14 +1,33 @@
 {% extends "bootstrap-base.html" %}
 
+{% macro sparql_to_table(panel, options={}) -%}
+// {{ panel }} table
+sparqlToDataTable2(`# tool: scholia
+{% include aspect + '_' + panel + '.sparql' %}
+`,
+"#{{ panel }}-table", "{{ aspect }}_{{ panel }}.sparql",
+options={{ options | tojson }});
+{%- endmacro %}
+
+{% macro sparql_to_iframe(panel) -%}
+// {{ panel }} iframe
+sparqlToIframe(`# tool: scholia
+{% include aspect + '_' + panel + '.sparql' %}`,
+"#{{ panel }}-iframe", "{{ aspect }}_{{ panel }}.sparql");
+{%- endmacro %}
+
+
 {% block head %}
 {{super()}}
 
 <meta name="robots" content="index, nofollow">
 
+<link rel="canonical" href="{{ 'https://scholia.toolforge.org' + request.path }}">
+
 <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
 <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='jquery.dataTables.min.css') }}">
 <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/scholia.css') }}">
-
+{% include "favicon.html" %}
 
 {% endblock %}
 
@@ -36,28 +55,135 @@
 	 }
 	 $("#h1").append(' (<a href="https://www.wikidata.org/wiki/{{ q }}">{{ q }}</a>)');
 	 
+	 var detailsList = Array();
 	 try {
 	     var orcid = item.claims.P496[0].mainsnak.datavalue.value;
-	     $( '#details' ).append( '<div><a href="https://orcid.org/"><img alt="' +
-				     'ORCID logo" src="{{ url_for('static', filename='images/orcid_16x16.gif') }}"' +
-				     'width="16" height="16" hspace="4" /></a> <a href="https://orcid.org/' +
-				     orcid + '">https://orcid.org/' + orcid + '</a></div>')
+	     detailsList.push( '<a href="https://orcid.org/"><img alt="' +
+			       'ORCID logo" src="{{ url_for('static', filename='images/orcid_16x16.gif') }}"' +
+			       'width="16" height="16" hspace="4" /></a> <a href="https://orcid.org/' +
+			       encodeURI( orcid ) + '">https://orcid.org/' + escapeHTML( orcid ) + '</a>');
 	 }
 	 catch(e) {}
-	 
-	 try {
-	     var doi = item.claims.P356[0].mainsnak.datavalue.value;
-	     $( '#details' ).append( 'DOI: <a href="https://doi.org/' + doi + '">' + doi + '</a>. ');
-	 }
-	 catch(e) {}
-	 
-	 try {
-	     var fullTextUrl = item.claims.P953[0].mainsnak.datavalue.value;
-	     $( '#details' ).append( '<a href="' + fullTextUrl + '">' + fullTextUrl + '</a>. ');
-	 }
-	 catch(e) {}
-	 
 
+	 try {
+	     var mastodonAccount = item.claims.P4033[0].mainsnak.datavalue.value;
+	     var mastodonComponents = mastodonAccount.split("@");
+	     if (mastodonComponents.length == 2) {
+		 detailsList.push( '<img alt="Twitter t icon" src="' +
+				   'https://upload.wikimedia.org/wikipedia/commons/4/48/Mastodon_Logotype_%28Simple%29.svg' +
+				   '" width="16" height="16" hspace="4" /> <a href="https://' + mastodonComponents[1] + '/@' +
+				   encodeURI( mastodonComponents[0] ) + '">@' + escapeHTML( mastodonComponents[0] ) + '</a> ');
+	     }
+	 }
+	 catch(e) { }
+
+	 try {
+	     var twitterAccount = item.claims.P2002[0].mainsnak.datavalue.value;
+	     detailsList.push( '<img alt="Twitter t icon" src="' +
+			       'https://upload.wikimedia.org/wikipedia/commons/8/8b/Twitter_logo_initial.svg' +
+			       '" width="16" height="16" hspace="4" /> <a href="https://twitter.com/' +
+			       encodeURI( twitterAccount ) + '">@' + escapeHTML( twitterAccount ) + '</a> ');
+	 }
+	 catch(e) { }
+
+	 try {
+	     var hashtag = item.claims.P2572[0].mainsnak.datavalue.value;
+	     detailsList.push( '<a href="https://hashtags-hub.toolforge.org/' +
+			       encodeURI( hashtag ) + '">#' + escapeHTML( hashtag ) + '</a> ');
+	 }
+	 catch(e) {}
+
+	 try {
+	     $( '#details' ).append( detailsList.join( " | " ) );
+	 }
+	 catch(e) {}
+	 
+	 /* BioSchemas annotation */
+	 if (item.claims.P225) {
+             try { /* Taxon */
+		 var taxonName = item.claims.P225[0].mainsnak.datavalue.value;
+		 bioschemasAnnotation = {
+	             "@context" : "https://schema.org",
+	             "@type" : "Taxon" ,
+	             "name" : taxonName ,
+	             "url" : "http://www.wikidata.org/entity/{{ q }}"
+		 }
+		 if (item.claims.P105) {
+	             var taxonRank = item.claims.P105[0].mainsnak.datavalue.value.id;
+	             bioschemasAnnotation.taxonRank = "http://www.wikidata.org/entity/" + taxonRank ;
+		 }
+		 if (item.claims.P171) {
+	             var parent = item.claims.P171[0].mainsnak.datavalue.value.id;
+	             bioschemasAnnotation.parentTaxon = "http://www.wikidata.org/entity/" + parent ;
+		 }
+		 $( '#bioschemas' ).append( JSON.stringify(bioschemasAnnotation) );
+		 // console.log(JSON.stringify(bioschemasAnnotation, "", 2))
+	     } catch(e) {}
+	 } else if (item.claims.P235) {
+	     try { /* Chemical Compound */
+		 var inchiKey = item.claims.P235[0].mainsnak.datavalue.value;
+		 bioschemasAnnotation = {
+	             "@context" : "https://schema.org",
+	             "@type" : "MolecularEntity" ,
+	             "identifier" : "{{ q }}" ,
+	             "inChIKey" : inchiKey ,
+	             "url" : "http://www.wikidata.org/entity/{{ q }}"
+		 }
+		 if (item.claims.P234 && item.claims.P234[0].mainsnak.datavalue) {
+	             var inchi = item.claims.P234[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.inChI = inchi ;
+		 }
+		 if (item.claims.P274 && item.claims.P274[0].mainsnak.datavalue) {
+	             var chemformula = item.claims.P274[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.molecularFormula = chemformula ;
+		 }
+		 if (item.claims.P2017 && item.claims.P2017[0].mainsnak.datavalue) {
+	             var smiles = item.claims.P2017[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.molecularFormula = smiles.replace("\"", "\'\'") ;
+		 } else if (item.claims.P233 && item.claims.P233[0].mainsnak.datavalue) {
+	             var smiles = item.claims.P233[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.smiles = smiles.replace("\"", "\'\'") ;
+		 }
+		 $( '#bioschemas' ).append( JSON.stringify(bioschemasAnnotation) );
+	     } catch(e) { console.log("Exception: " + e)
+	     }
+	 } else if (item.claims.P352) { // UniProt ID
+	     try { /* Protein */
+		 var uniprot = item.claims.P352[0].mainsnak.datavalue.value;
+		 bioschemasAnnotation = {
+	             "@context" : "https://schema.org",
+	             "@type" : "Protein" ,
+	             "identifier" : "{{ q }}" ,
+	             "url" : "http://www.wikidata.org/entity/{{ q }}" ,
+	             "sameAs": "https://www.uniprot.org/uniprot/" + uniprot
+		 }
+		 $( '#bioschemas' ).append( JSON.stringify(bioschemasAnnotation) );
+	     } catch(e) { console.log("Exception: " + e)
+	     }
+	 } else if (item.claims.P351 || item.claims.P594) { // NCBI Gene or Ensembl
+	     try { /* Gene */
+		 bioschemasAnnotation = {
+	             "@context" : "https://schema.org",
+	             "@type" : "Gene" ,
+	             "identifier" : "{{ q }}" ,
+	             "url" : "http://www.wikidata.org/entity/{{ q }}"
+		 }
+		 counter = 0
+		 bioschemasAnnotation.sameAs = []
+		 if (item.claims.P351 && item.claims.P351[0].mainsnak.datavalue) {
+	             var ncbi = item.claims.P351[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.sameAs[counter] = "https://www.ncbi.nlm.nih.gov/gene/" + ncbi;
+	             counter++
+		 }
+		 if (item.claims.P594 && item.claims.P594[0].mainsnak.datavalue) {
+	             var ensembl = item.claims.P594[0].mainsnak.datavalue.value;
+	             bioschemasAnnotation.sameAs[counter] = "http://identifiers.org/ensembl/" + ensembl;
+		 }
+		 $( '#bioschemas' ).append( JSON.stringify(bioschemasAnnotation) );
+	     } catch(e) { console.log("Exception: " + e)
+	     }
+	 }
+	 
 	 /* English Wikipedia */
 	 if ('enwiki' in item.sitelinks) {
 	     var title = item.sitelinks.enwiki.title;
@@ -136,6 +262,8 @@
     UNION
     { wd:{{ q }} wdt:P235 [] . BIND("chemical" AS ?aspect) }
     UNION
+    { wd:{{ q }} ^wdt:P31/wdt:P235 [] . BIND("chemical-class" AS ?aspect) }
+    UNION
     { wd:{{ q }} wdt:P644 [] . BIND("gene" AS ?aspect) }
     UNION
     { wd:{{ q }} wdt:P50 | wdt:P2093 [] . BIND("work" AS ?aspect) }
@@ -158,7 +286,7 @@
 
 
      /* Wembedder */
-     var wembedderUrl = "https://tools.wmflabs.org/wembedder/api/most-similar/{{ q }}";
+     var wembedderUrl = "https://wembedder.toolforge.org/api/most-similar/{{ q }}";
      $.ajax({
 	 url: wembedderUrl,
 	 success: function (data) {
@@ -199,6 +327,34 @@
      });
  }
 
+ $('#searchterm').keyup(function( e ) {
+     var q = $('#searchterm').val();
+     $.getJSON("https://www.wikidata.org/w/api.php?callback=?", {
+         search: q,
+         action: "wbsearchentities",
+         language: "en",
+         uselang: "en",
+         format: "json",
+         strictlanguage: true,
+     },
+               function(data) {
+		   $("#searchresult").empty();
+		   $.each(data.search, function(i, item) {
+		       $("#searchresult")
+			   .append("<div><a href='{{ url_for('app.index') }}" + item.title + "'>" + 
+				   escapeHTML(item.label) + 
+				   "</a> - " + escapeHTML(item.description) + "</div>");
+		   });
+	       });
+ });
+
+ $(document).ready(function() {
+     
+     {% block in_ready %}{% endblock %}
+     
+ });
+
+
 </script>
 
 {% endblock %}
@@ -206,7 +362,7 @@
 {% block navbar %}
 <div class="navbar navbar-static-top">
     <ul class="nav nav-pills">
-	<li role="presentation"><a href="{{ url_for('app.index') }}">Scholia</a></li>
+	<li role="presentation"><a href="{{ url_for('app.index') }}"><img src="{{ url_for('static', filename='images/scholia_wordmark.svg') }}" width="112px" height="24px" alt="Scholia"></a></li>
 	<li role="presentation"><a href="{{ url_for('app.show_author_empty') }}">Author</a></li>
 	<li role="presentation">
 	    <div class="dropdown">
@@ -314,7 +470,19 @@
 		</ul>
 	    </div>
 	</li>
+    
     </ul>
+    {% block nav_search %}
+    <div class='nav nav-search'>
+	    <div class="input-group">
+        <input type="text" class="form-control"
+            placeholder="Search..." id="searchterm"/>
+
+        </div>
+
+        <div id="searchresult"></div>
+    </div>
+    {% endblock %}
 </div>
 {% endblock %}
 
@@ -333,13 +501,19 @@
     Code from
     <a href="https://github.com/fnielsen/scholia">GitHub repository</a>
     |
-    Hosted on   <a href="https://tools.wmflabs.org/">Wikimedia Toolforge</a>,
+    Hosted on   <a href="https://toolforge.org/">Wikimedia Toolforge</a>,
     a <a href="https://wikimediafoundation.org">Wikimedia Foundation</a> service
     |
     License for content: CC0 for data, CC-BY-SA for text and media
     |
     Report technical problems at Scholia's
     <a href="https://github.com/fnielsen/scholia/issues">Issues</a> GitHub page.
+    |
+    Follow us on <a href="https://twitter.com/wdscholia">Twitter</a>.
+    <hr>
   </div>
 {% endblock %}
 
+<script type="text/javascript">
+    
+</script>

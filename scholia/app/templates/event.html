@@ -7,7 +7,7 @@
 <script type="text/javascript">
  peopleSparql = `
 SELECT
-  (?number_of_publications AS ?pubs)
+  (?number_of_publications AS ?works)
   ?person ?personLabel ?personDescription
   ?roles
   ?example_work ?example_workLabel
@@ -127,19 +127,28 @@ LIMIT 200
 `
 
  proceedingsPublicationsSparql = `
+# Scholia
 SELECT
   ?work ?workLabel
-  ?authors
-  ?topics
+  ?authors ?authorsUrl
+  ?topics ?topicsUrl
 WITH {
   SELECT 
     ?work
-    (GROUP_CONCAT(DISTINCT ?author; separator=" // ") AS ?authors)
-    (GROUP_CONCAT(DISTINCT ?topic; separator=" // ") AS ?topics)
+    (GROUP_CONCAT(DISTINCT ?author_label; separator=", ") AS ?authors)
+    (CONCAT("../authors/", GROUP_CONCAT(DISTINCT SUBSTR(STR(?author), 32); separator=",")) AS ?authorsUrl)    
+    (GROUP_CONCAT(DISTINCT ?topic_label; separator=", ") AS ?topics)
+    (CONCAT("../topics/", GROUP_CONCAT(DISTINCT SUBSTR(STR(?topic), 32); separator=",")) AS ?topicsUrl)
   WHERE {
     ?work wdt:P1433 / wdt:P4745 wd:{{ q }} .
-    OPTIONAL { ?work wdt:P50 / rdfs:label ?author . FILTER(LANG(?author) = "en") }
-    OPTIONAL { ?work wdt:P921 / rdfs:label ?topic . FILTER(LANG(?topic) = "en") }
+    OPTIONAL {
+      ?work wdt:P50 ?author .
+      ?author rdfs:label ?author_label . FILTER(LANG(?author_label) = "en")
+    }
+    OPTIONAL {
+      ?work wdt:P921 ?topic .
+      ?topic rdfs:label ?topic_label . FILTER(LANG(?topic_label) = "en")
+    }
   }
   GROUP BY ?work
 } AS %results
@@ -147,7 +156,6 @@ WHERE {
   INCLUDE %results
   SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
 }
-
 `
 
  recentPublicationsSparql = `
@@ -155,7 +163,7 @@ WHERE {
 SELECT
   ?publication_date
   ?work ?workLabel
-  ?authors
+  ?authors ?authorsUrl
 WITH {
   SELECT
     DISTINCT ?person
@@ -180,7 +188,8 @@ WITH {
   SELECT
     (xsd:date(MAX(?publication_datetime)) AS ?publication_date)
     ?work
-    (GROUP_CONCAT(DISTINCT ?person_label; separator=" // ") AS ?authors)
+    (GROUP_CONCAT(DISTINCT ?person_label; separator=", ") AS ?authors)
+    (CONCAT("../authors/", GROUP_CONCAT(DISTINCT SUBSTR(STR(?person), 32); separator=",")) AS ?authorsUrl)
   WHERE {
     INCLUDE %people .
     ?work wdt:P50 ?person ; wdt:P577 ?publication_datetime .
@@ -248,6 +257,12 @@ WITH {
       }
       GROUP BY ?event
     }  
+    UNION
+    {
+      VALUES ?online_event { wd:Q1543677 wd:Q98381855 wd:Q98381912 }
+      ?event wdt:P31 ?online_event .
+      BIND(200 AS ?location_scores)
+    }
   
     BIND((?time_scores * ?location_scores) AS ?scores)
   }
@@ -306,6 +321,8 @@ ORDER BY DESC(?score)
 <h1 id="h1">Event</h1>
 
 <div id="intro"></div>
+
+<div id="details"></div>
 
 
 <h2>People</h2>
