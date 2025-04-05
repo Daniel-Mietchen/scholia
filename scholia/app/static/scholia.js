@@ -243,8 +243,8 @@ function sparqlDataToSimpleData(response) {
 
 function sparqlToDataTablePost(sparql, element, filename, options = {}) {
     sparqlToDataTablePost2(
-        "https://query.wikidata.org/sparql",
-        "https://query.wikidata.org/#",
+        "{{ sparql_endpoint }}",
+        "{{ sparql_editurl }}",
         sparql, element, filename, options
     );
 }
@@ -252,10 +252,10 @@ function sparqlToDataTablePost(sparql, element, filename, options = {}) {
 
 function sparqlToDataTablePost2(url, editURL, sparql, element, filename, options = {}) {
     // Options: paging=
-    if (!url) url = "https://query.wikidata.org/sparql";
+    if (!url) url = "{{ sparql_endpoint }}";
 
     /* The edit URL needs a hashmark.  */
-    if (!editURL) editURL = "https://query.wikidata.org/#";
+    if (!editURL) editURL = "{{ sparql_editurl }}";
     
     var paging = (typeof options.paging === 'undefined') ? true : options.paging;
     var sDom = (typeof options.sDom === 'undefined') ? 'lfrtip' : options.sDom;
@@ -308,7 +308,7 @@ function sparqlToDataTablePost2(url, editURL, sparql, element, filename, options
 
 function sparqlToDataTable(sparql, element, filename, options = {}) {
     sparqlToDataTablePost2(
-        "https://query.wikidata.org/sparql",
+        "{{ sparql_endpoint }}",
         "https://query.wikidata.org/",
         sparql, element, filename, options
     );
@@ -317,10 +317,10 @@ function sparqlToDataTable(sparql, element, filename, options = {}) {
 
 function sparqlToDataTable2(url, editURL, sparql, element, filename, options = {}) {
     // Options: paging=true
-    if (!url) url = "https://query.wikidata.org/sparql";
+    if (!url) url = "{{ sparql_endpoint }}";
 
     /* The edit URL needs a hashmark.  */
-    if (!editURL) editURL = "https://query.wikidata.org/#";
+    if (!editURL) editURL = "{{ sparql_editurl }}";
 
     var paging = (typeof options.paging === 'undefined') ? true : options.paging;
     var sDom = (typeof options.sDom === 'undefined') ? 'lfrtip' : options.sDom;
@@ -449,9 +449,9 @@ function sparqlToDataTable2(url, editURL, sparql, element, filename, options = {
 
 function sparqlToIframe(sparql, element, filename) {
     sparqlToIframe2(
-        "https://query.wikidata.org/sparql",
-        "https://query.wikidata.org/#",
-        "https://query.wikidata.org/embed.html#",
+        "{{ sparql_endpoint }}",
+        "{{ sparql_editurl }}",
+        "{{ sparql_embedurl }}",
         sparql, element, filename, options
     );
 }
@@ -459,12 +459,12 @@ function sparqlToIframe(sparql, element, filename) {
 
 function sparqlToIframe2(url, editURL, embedURL, sparql, element, filename) {
     let $iframe = $(element);
-    if (!url) url = "https://query.wikidata.org/sparql";
+    if (!url) url = "{{ sparql_endpoint }}";
 
     /* The edit URL needs a hashmark.  */
-    if (!editURL) editURL = "https://query.wikidata.org/#";
+    if (!editURL) editURL = "{{ sparql_editurl }}";
 
-    if (!embedURL) embedURL = "https://query.wikidata.org/embed.html#";
+    if (!embedURL) embedURL = "{{ sparql_embedurl }}";
 
     const wikidata_sparql = url + "?query=" + encodeURIComponent(sparql);
     const wikidata_query = editURL + encodeURIComponent(sparql);
@@ -731,7 +731,7 @@ function sparqlToShortInchiKey(sparql, key,  element, filename) {
 
 
 function askQuery(panel, askQuery, callback) {
-     var endpointUrl = 'https://query.wikidata.org/sparql';
+     var endpointUrl = '{{ sparql_endpoint }}';
      
      var settings = {
        headers: { Accept: 'application/sparql-results+json' },
