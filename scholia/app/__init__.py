@@ -6,7 +6,7 @@ from __future__ import absolute_import, division, print_function
 from flask import Flask
 from flask_bootstrap import Bootstrap, StaticCDN
 
-from ..text import load_text_to_topic_q_text
+from ..text import TextToTopicQText
 
 
 def create_app(text_to_topic_q_text_enabled=True, third_parties_enabled=False):
@@ -40,11 +40,13 @@ def create_app(text_to_topic_q_text_enabled=True, third_parties_enabled=False):
     app.extensions['bootstrap']['cdns']['bootstrap'] = StaticCDN()
 
     from .views import main as main_blueprint
+    from .views import page_not_found
     app.register_blueprint(main_blueprint)
+    app.register_error_handler(404, page_not_found)
 
     app.text_to_topic_q_text_enabled = text_to_topic_q_text_enabled
     if text_to_topic_q_text_enabled:
-        app.text_to_topic_q_text = load_text_to_topic_q_text()
+        app.text_to_topic_q_text = TextToTopicQText()
 
     app.third_parties_enabled = third_parties_enabled
 

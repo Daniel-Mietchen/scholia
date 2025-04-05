@@ -30,13 +30,16 @@ Semantic relatedness \cite{Q26973018}.
 from __future__ import print_function
 
 import os
-from os import write
-from os.path import splitext
 
 import re
 import unicodedata
 
-from six import ensure_text, u
+from six import u
+try:
+    from six import ensure_text
+except ImportError:
+    # enture_text is not available in Python3.7 apparently
+    ensure_text = str
 
 from .api import (
     entity_to_authors, entity_to_classes, entity_to_doi,
@@ -211,7 +214,7 @@ def extract_dois_from_aux_string(string):
 
     Examples
     --------
-    >>> string = "\citation{10.1186/S13321-016-0161-3}"
+    >>> string = "\\citation{10.1186/S13321-016-0161-3}"
     >>> extract_dois_from_aux_string(string)
     ['10.1186/S13321-016-0161-3']
 
@@ -241,23 +244,23 @@ def extract_qs_from_aux_string(string):
 
     Examples
     --------
-    >>> string = "\citation{Q28042913}"
+    >>> string = "\\citation{Q28042913}"
     >>> extract_qs_from_aux_string(string)
     ['Q28042913']
 
-    >>> string = "\citation{Q28042913,Q27615040}"
+    >>> string = "\\citation{Q28042913,Q27615040}"
     >>> extract_qs_from_aux_string(string)
     ['Q28042913', 'Q27615040']
 
-    >>> string = "\citation{Q28042913,Q27615040,Q27615040}"
+    >>> string = "\\citation{Q28042913,Q27615040,Q27615040}"
     >>> extract_qs_from_aux_string(string)
     ['Q28042913', 'Q27615040', 'Q27615040']
 
-    >>> string = "\citation{Q28042913,NielsenF2002Neuroinformatics,Q27615040}"
+    >>> string = "\\citation{Q28042913,NielsenF2002Neuroinformatics,Q27615040}"
     >>> extract_qs_from_aux_string(string)
     ['Q28042913', 'Q27615040']
 
-    >>> string = "\citation{Q28042913,Q27615040.Q27615040}"
+    >>> string = "\\citation{Q28042913,Q27615040.Q27615040}"
     >>> extract_qs_from_aux_string(string)
     ['Q28042913']
 
@@ -315,7 +318,7 @@ def entity_to_bibtex_entry(entity, key=None):
     if key is None:
         entry = u("@Article{%s,\n") % entity['id']
     else:
-        entry = u("@Article{%s,\n") % escape_to_tex(key)
+        entry = u("@Article{%s,\n") % key
     authors = authors_to_bibtex_authors(
         entity_to_authors(entity, return_humanness=True))
     entry += "  author =   {%s},\n" % u" and ".join(authors)
@@ -348,7 +351,7 @@ def main():
 
     elif arguments['write-bbl-from-aux']:
         aux_filename = arguments['<file>']
-        base_filename, _ = splitext(aux_filename)
+        base_filename, _ = os.path.splitext(aux_filename)
         bbl_filename = base_filename + '.bbl'
 
         string = open(aux_filename).read()
@@ -377,7 +380,7 @@ def main():
 
     elif arguments['write-bib-from-aux']:
         aux_filename = arguments['<file>']
-        base_filename, _ = splitext(aux_filename)
+        base_filename, _ = os.path.splitext(aux_filename)
         bib_filename = base_filename + '.bib'
 
         string = open(aux_filename).read()
@@ -407,7 +410,7 @@ def main():
         # Write BibTeX-formatted string to file
         output_file = os.open(bib_filename, os.O_RDWR | os.O_CREAT)
         output_encoding = "utf-8"
-        write(output_file, bib.encode(output_encoding))
+        os.write(output_file, bib.encode(output_encoding))
 
 
 if __name__ == '__main__':

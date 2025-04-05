@@ -1,11 +1,13 @@
+PREFIX target: <http://www.wikidata.org/entity/{{ q }}>
+
 SELECT
   ?year
-  ?recipient ?recipientLabel 
+  ?recipient ?recipientLabel ?recipientDescription
   ?example_work ?example_workLabel
 WITH {
   SELECT DISTINCT ?recipient ?year (SAMPLE(?work) AS ?example_work) WHERE {
     ?recipient p:P166 ?award_statement . 
-    ?award_statement ps:P166 wd:{{ q }} .
+    ?award_statement ps:P166 target: .
     OPTIONAL {
       { ?award_statement pq:P585 ?time }
       UNION
@@ -18,6 +20,7 @@ WITH {
 } AS %result
 WHERE {
   INCLUDE %result 
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en,da,de,es,fr,jp,no,ru,sv,zh" . }  
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en,da,de,es,fr,jp,no,ru,sv,zh" . }  
 }
 ORDER BY DESC(?year)
+LIMIT 10000

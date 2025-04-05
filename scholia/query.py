@@ -2,6 +2,8 @@
 
 Usage:
   scholia.query arxiv-to-q <arxiv>
+  scholia.query biorxiv-to-q <biorxiv>
+  scholia.query chemrxiv-to-q <chemrxiv>
   scholia.query cas-to-q <cas>
   scholia.query atomic-symbol-to-q <symbol>
   scholia.query cordis-to-q <cordis>
@@ -16,14 +18,18 @@ Usage:
   scholia.query mesh-to-q <meshid>
   scholia.query ncbi-gene-to-q <gene>
   scholia.query ncbi-taxon-to-q <taxon>
+  scholia.query omim-to-q <omimID>
   scholia.query orcid-to-q <orcid>
   scholia.query pubchem-to-q <cid>
   scholia.query pubmed-to-q <pmid>
   scholia.query q-to-label <q>
   scholia.query q-to-class <q>
   scholia.query random-author
+  scholia.query random-podcast
+  scholia.query random-work
   scholia.query ror-to-q <rorid>
   scholia.query twitter-to-q <twitter>
+  scholia.query uniprot-to-q <protein>
   scholia.query viaf-to-q <viaf>
   scholia.query website-to-q <url>
   scholia.query wikipathways-to-q <wpid>
@@ -39,7 +45,7 @@ Examples
   $ python -m scholia.query doi-to-q 10.475/123_4
   Q41533080
 
-  $ python -m schoia.query q-to-label Q80
+  $ python -m scholia.query q-to-label Q80
   Tim Berners-Lee
 
 """
@@ -51,16 +57,78 @@ from random import randrange
 
 import requests
 
-from simplejson import JSONDecodeError
-
 from six import u
 
-USER_AGENT = 'Scholia'
+from .config import config
+
+
+SPARQL_ENDPOINT = config['query-server'].get('sparql_endpoint')
+
+USER_AGENT = config['requests'].get('user_agent')
 
 HEADERS = {'User-Agent': USER_AGENT}
 
-# Instead of of querying common ISO 639 codes, they are just listed here
-ISO639_TO_Q = {'en': 'Q1860'}
+# Instead of of querying common ISO 639 codes, they are just listed
+# here
+#
+# SELECT (GROUP_CONCAT(?entry; separator=", ") AS ?entries) {
+#   ?language wdt:P218 ?iso .
+#   BIND(CONCAT("'", ?iso, "': '", SUBSTR(STR(?language), 32), "'") AS ?entry)
+#   BIND(1 AS ?dummy)
+# }
+# GROUP BY ?dummy
+#
+# cu, el and iu has multiple values
+ISO639_TO_Q = {
+    'ab': 'Q5111', 'af': 'Q14196', 'ak': 'Q28026', 'am': 'Q28244',
+    'an': 'Q8765', 'ar': 'Q13955', 'as': 'Q29401', 'av': 'Q29561',
+    'ay': 'Q4627', 'az': 'Q9292', 'ba': 'Q13389', 'be': 'Q9091', 'bg':
+    'Q7918', 'bi': 'Q35452', 'bm': 'Q33243', 'bn': 'Q9610', 'bo':
+    'Q34271', 'br': 'Q12107', 'bs': 'Q9303', 'ca': 'Q7026', 'ce':
+    'Q33350', 'ch': 'Q33262', 'co': 'Q33111', 'cr': 'Q33390', 'cs':
+    'Q9056', 'cv': 'Q33348', 'cy':
+    'Q9309', 'da': 'Q9035', 'de': 'Q188', 'dv': 'Q32656', 'dz':
+    'Q33081', 'ee': 'Q30005', 'el': 'Q9129', 'en':
+    'Q1860', 'eo': 'Q143', 'es': 'Q1321', 'et': 'Q9072', 'eu':
+    'Q8752', 'fa': 'Q9168', 'ff': 'Q33454', 'fi': 'Q1412', 'fj':
+    'Q33295', 'fo': 'Q25258', 'fr': 'Q150', 'fy': 'Q27175', 'ga':
+    'Q9142', 'gd': 'Q9314', 'gl': 'Q9307', 'gn': 'Q35876', 'gu':
+    'Q5137', 'gv': 'Q12175', 'ha': 'Q56475', 'he': 'Q9288', 'hi':
+    'Q1568', 'hr': 'Q6654', 'ht': 'Q33491', 'hu': 'Q9067', 'hy':
+    'Q8785', 'ia': 'Q35934', 'id': 'Q9240', 'ie': 'Q35850', 'ig':
+    'Q33578', 'ii': 'Q34235', 'ik': 'Q27183', 'io': 'Q35224', 'is':
+    'Q294', 'it': 'Q652', 'ja':
+    'Q5287', 'jv': 'Q33549', 'ka': 'Q8108', 'kg': 'Q33702', 'ki':
+    'Q33587', 'kk': 'Q9252', 'kl': 'Q25355', 'km': 'Q9205', 'kn':
+    'Q33673', 'ko': 'Q9176', 'ks': 'Q33552', 'ku': 'Q36368', 'kv':
+    'Q36126', 'kw': 'Q25289', 'ky': 'Q9255', 'la': 'Q397', 'lb':
+    'Q9051', 'lg': 'Q33368', 'li': 'Q102172', 'ln': 'Q36217', 'lo':
+    'Q9211', 'lt': 'Q9083', 'lv': 'Q9078', 'mg': 'Q7930', 'mi':
+    'Q36451', 'mk': 'Q9296', 'ml': 'Q36236', 'mn': 'Q9246', 'mr':
+    'Q1571', 'ms': 'Q9237', 'mt': 'Q9166', 'my': 'Q9228', 'na':
+    'Q13307', 'nb': 'Q25167', 'ne': 'Q33823', 'nl': 'Q7411', 'nn':
+    'Q25164', 'nv': 'Q13310', 'ny': 'Q33273', 'oc': 'Q14185', 'om':
+    'Q33864', 'or': 'Q33810', 'os': 'Q33968', 'pa': 'Q58635', 'pi':
+    'Q36727', 'pl': 'Q809', 'ps': 'Q58680', 'pt': 'Q5146', 'qu':
+    'Q5218', 'rm': 'Q13199', 'rn': 'Q33583', 'ro': 'Q7913', 'ru':
+    'Q7737', 'rw': 'Q33573', 'sa': 'Q11059', 'sc': 'Q33976', 'sd':
+    'Q33997', 'se': 'Q33947', 'sg': 'Q33954', 'sh': 'Q9301', 'si':
+    'Q13267', 'sk': 'Q9058', 'sl': 'Q9063', 'sm': 'Q34011', 'sn':
+    'Q34004', 'so': 'Q13275', 'sq': 'Q8748', 'sr': 'Q9299', 'ss':
+    'Q34014', 'st': 'Q34340', 'su': 'Q34002', 'sv': 'Q9027', 'sw':
+    'Q7838', 'ta': 'Q5885', 'te': 'Q8097', 'tg': 'Q9260', 'th':
+    'Q9217', 'ti': 'Q34124', 'tk': 'Q9267', 'tl': 'Q34057', 'tn':
+    'Q34137', 'to': 'Q34094', 'tr': 'Q256', 'ts': 'Q34327', 'tt':
+    'Q25285', 'tw': 'Q36850', 'ty': 'Q34128', 'ug': 'Q13263', 'uk':
+    'Q8798', 'ur': 'Q1617', 'uz': 'Q9264', 've': 'Q32704', 'vi':
+    'Q9199', 'vo': 'Q36986', 'wa': 'Q34219', 'wo': 'Q34257', 'xh':
+    'Q13218', 'yi': 'Q8641', 'yo': 'Q34311', 'za': 'Q13216', 'zh':
+    'Q7850', 'zu': 'Q10179', 'ng': 'Q33900', 'bh': 'Q135305', 'ae':
+    'Q29572', 'aa': 'Q27811', 'kr': 'Q36094', 'ho': 'Q33617', 'hz':
+    'Q33315', 'kj': 'Q1405077', 'mh': 'Q36280', 'nd': 'Q35613', 'nr':
+    'Q36785', 'no': 'Q9043', 'oj': 'Q33875', 'lu': 'Q36157', 'mo':
+    'Q36392'
+}
 
 
 class QueryResultError(Exception):
@@ -111,7 +179,7 @@ def query_to_bindings(query):
         Data as list of dicts.
 
     """
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -138,14 +206,97 @@ def arxiv_to_qs(arxiv):
     True
 
     """
-    query = 'select ?work where {{ ?work wdt:P818 "{arxiv}" }}'.format(
-        arxiv=escape_string(arxiv))
+    return identifier_to_qs('P818', arxiv)
 
-    url = 'https://query.wikidata.org/sparql'
+
+def biorxiv_to_qs(biorxiv_id):
+    """Convert bioRxiv ID to Wikidata ID.
+
+    Parameters
+    ----------
+    biorxiv_id : str
+        bioRxiv identifier.
+
+    Returns
+    -------
+    qs : list of str
+        List of string with Wikidata IDs.
+
+    Examples
+    --------
+    >>> biorxiv_to_qs('2020.08.20.259226') == ['Q104920313']
+    True
+
+    """
+    return identifier_to_qs('P3951', biorxiv_id)
+
+
+def chemrxiv_to_qs(chemrxiv_id):
+    """Convert ChemRxiv ID to Wikidata ID.
+
+    Parameters
+    ----------
+    chemrxiv_id : str
+        ChemRxiv identifier.
+
+    Returns
+    -------
+    qs : list of str
+        List of strings with Wikidata IDs.
+
+    Examples
+    --------
+    >>> chemrxiv_to_qs('12791954') == ['Q98577324']
+    True
+
+    """
+    return identifier_to_qs('P9262', chemrxiv_id)
+
+
+def identifier_to_qs(property, identifier):
+    """Convert identifier to Wikidata identifiers.
+
+    Convert an specific identifier to a Wikidata identifier given the
+    identifier type.
+
+    Parameters
+    ----------
+    property : str
+        String with Wikidata property identifier for a identifier.
+    identifier : str
+        String with specific identifier.
+
+    Returns
+    -------
+    qs : list of str
+        List of zero or more strings with Wikidata IDs matching the identifier.
+
+    Notes
+    -----
+    The Wikidata Query Service is queried to resolve the given identifier. If
+    an error happens an empty list is returned.
+
+    Examples
+    --------
+    >>> property = "P10283"  # Property identifier for OpenAlex ID
+    >>> identifier = "a5060194743" # Corresponding to Q20980928 (E Willighagen)
+    >>> qs = identifier_to_qs(property, identifier)
+    >>> qs == ['Q20895241']
+    True
+
+    """
+    query = 'SELECT ?work {{ ?work wdt:{property} "{identifier}" }}'.format(
+        property=property,
+        identifier=escape_string(identifier),
+    )
+
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
-    response = requests.get(url, params=params, headers=HEADERS)
-    data = response.json()
-
+    try:
+        response = requests.get(url, params=params, headers=HEADERS)
+        data = response.json()
+    except Exception:
+        return []
     return [item['work']['value'][31:]
             for item in data['results']['bindings']]
 
@@ -191,7 +342,7 @@ def count_scientific_articles():
     query = """
         SELECT (COUNT(*) AS ?count) WHERE { [] wdt:P31 wd:Q13442814 }"""
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -229,7 +380,49 @@ def doi_to_qs(doi):
     query = 'select ?work where {{ ?work wdt:P356 "{doi}" }}'.format(
         doi=escape_string(doi.upper()))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
+    params = {'query': query, 'format': 'json'}
+    try:
+        response = requests.get(url, params=params, headers=HEADERS)
+        data = response.json()
+
+        return [item['work']['value'][31:]
+                for item in data['results']['bindings']]
+    except Exception:
+        return []
+
+
+def doi_prefix_to_qs(doi):
+    """Convert DOI prefix to Wikidata ID.
+
+    Wikidata Query Service is used to resolve the DOI.
+
+    The DOI string is converted to uppercase before any
+    query is made. Uppercase DOIs are default in Wikidata.
+
+    Parameters
+    ----------
+    doi : str
+        DOI prefix identifier
+
+    Returns
+    -------
+    qs : list of str
+        Strings of Wikidata ID.
+
+    Examples
+    --------
+    >>> doi_prefix_to_qs('10.1186') == ['Q463494']
+    True
+
+    >>> doi_prefix_to_qs('10.1016') == ['Q746413']
+    True
+
+    """
+    query = 'select ?work where {{ ?work wdt:P1662 "{doi}" }}'.format(
+        doi=escape_string(doi.upper()))
+
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -271,7 +464,7 @@ def iso639_to_q(language):
     else:
         raise ValueError('ISO639 language code not recognized')
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -312,13 +505,38 @@ def pubchem_to_qs(cid):
     query = 'select ?chemical where {{ ?chemical wdt:P662 "{cid}" }}'.format(
         cid=cid)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
 
     return [item['chemical']['value'][31:]
             for item in data['results']['bindings']]
+
+
+def openalex_to_qs(openalex):
+    """Convert OpenAlex ID to Wikidata identifiers.
+
+    Given an identifier from the OpenAlex return zero or more corresponding
+    Wikidata identifiers.
+
+    Parameters
+    ----------
+    openalex : str
+        OpenAlex identifier.
+
+    Returns
+    -------
+    qs : list of str
+        List of string with Wikidata IDs.
+
+    Examples
+    --------
+    >>> openalex_to_qs('a5060194743') == ['Q20895241']
+    True
+
+    """
+    return identifier_to_qs('P10283', openalex)
 
 
 def pubmed_to_qs(pmid):
@@ -348,7 +566,7 @@ def pubmed_to_qs(pmid):
     query = 'select ?work where {{ ?work wdt:P698 "{pmid}" }}'.format(
         pmid=pmid)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -381,12 +599,48 @@ def ror_to_qs(rorid):
     query = 'select ?work where {{ ?work wdt:P6782 "{rorid}" }}'.format(
         rorid=rorid)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
 
     return [item['work']['value'][31:]
+            for item in data['results']['bindings']]
+
+
+def uniprot_to_qs(protein):
+    """Convert a UniProt identifier to Wikidata ID.
+
+    Wikidata Query Service is used to resolve the UniProt identifier.
+
+    The UniProt identifier string is converted to uppercase before any
+    query is made.
+
+    Parameters
+    ----------
+    protein : str
+        UniProt identifier
+
+    Returns
+    -------
+    qs : list of str
+        List of strings with Wikidata IDs.
+
+    Examples
+    --------
+    >>> uniprot_to_qs('P02649') == ['Q424728']
+    True
+
+    """
+    query = 'select ?protein where {{ ?protein wdt:P352 "{protein}" }}'.format(
+        protein=protein)
+
+    url = SPARQL_ENDPOINT
+    params = {'query': query, 'format': 'json'}
+    response = requests.get(url, params=params, headers=HEADERS)
+    data = response.json()
+
+    return [item['protein']['value'][31:]
             for item in data['results']['bindings']]
 
 
@@ -417,7 +671,7 @@ def ncbi_gene_to_qs(gene):
     query = 'select ?gene where {{ ?gene wdt:P351 "{gene}" }}'.format(
         gene=gene)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -453,7 +707,7 @@ def ncbi_taxon_to_qs(taxon):
     query = 'select ?work where {{ ?work wdt:P685 "{taxon}" }}'.format(
         taxon=taxon)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -487,7 +741,7 @@ def wikipathways_to_qs(wpid):
              '?work wdt:P2410 ?wpid }}').format(
                  wpid=wpid)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -518,12 +772,43 @@ def issn_to_qs(issn):
     query = 'select ?author where {{ ?author wdt:P236 "{issn}" }}'.format(
         issn=escape_string(issn))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
 
     return [item['author']['value'][31:]
+            for item in data['results']['bindings']]
+
+
+def omim_to_qs(omimID):
+    """Convert OMIM identifier to Wikidata ID.
+
+    Parameters
+    ----------
+    omim : str
+        OMIM identifier
+
+    Returns
+    -------
+    qs : list of str
+        List of strings with Wikidata IDs.
+
+    Examples
+    --------
+    >>> 'Q41112' in omim_to_qs('181500')
+    True
+
+    """
+    query = 'select ?disease where {{ ?disease wdt:P492 "{omimID}" }}'.format(
+        omimID=escape_string(omimID))
+
+    url = SPARQL_ENDPOINT
+    params = {'query': query, 'format': 'json'}
+    response = requests.get(url, params=params, headers=HEADERS)
+    data = response.json()
+
+    return [item['disease']['value'][31:]
             for item in data['results']['bindings']]
 
 
@@ -549,7 +834,7 @@ def orcid_to_qs(orcid):
     query = 'select ?author where {{ ?author wdt:P496 "{orcid}" }}'.format(
         orcid=escape_string(orcid))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -580,7 +865,7 @@ def mesh_to_qs(meshid):
     query = 'select ?cmp where {{ ?cmp wdt:P486 "{meshid}" }}'.format(
         meshid=meshid)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -614,7 +899,7 @@ def q_to_dois(q):
     """
     query = """SELECT ?doi {{ wd:{q} wdt:P356 ?doi }}""".format(q=q)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -649,7 +934,7 @@ def q_to_label(q, language='en'):
         FILTER (LANG(?label) = "{language}") }}""".format(
         q=q, language=language)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -709,7 +994,7 @@ def search_article_titles(q, search_string=None):
     # addition during query.
     article_count = count_scientific_articles() + 1000
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
 
     batch_size = 500000
     loops = article_count // batch_size + 1
@@ -781,7 +1066,7 @@ def viaf_to_qs(viaf):
     query = 'select ?author where {{ ?author wdt:P214 "{viaf}" }}'.format(
         viaf=escape_string(viaf))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -815,12 +1100,12 @@ def q_to_class(q):
     query = 'SELECT ?class {{ wd:{q} wdt:P31 ?class }}'.format(
         q=escape_string(q))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     try:
         data = response.json()
-    except JSONDecodeError:
+    except requests.exceptions.JSONDecodeError:
         # If the Wikidata MediaWiki API does not return a proper
         # response, then fallback on nothing.
         classes = []
@@ -840,6 +1125,7 @@ def q_to_class(q):
     ]):
         class_ = 'series'
     elif set(classes).intersection([
+            'Q41298',  # magazine
             'Q737498',  # academic journal
             'Q5633421',  # scientific journal
             'Q1143604',  # proceedings
@@ -866,19 +1152,38 @@ def q_to_class(q):
         class_ = 'gene'
     elif set(classes).intersection([
             'Q571',  # book
+            'Q49848',  # document
+            'Q187685',  # doctoral thesis
             'Q191067',  # article
+            'Q815382',  # meta-analysis
+            'Q871232',  # editorial
             'Q253623',  # patent
             'Q580922',  # preprint
+            'Q685935',  # trade magazine
+            'Q1266946',  # thesis
+            'Q1778788',  # cohort study
+            'Q1907875',  # master's thesis
             'Q1980247',  # chapter
             'Q3331189',  # edition
-            'Q5707594',  # news article
-            'Q10870555',  # report
-            'Q10885494',  # scientific conference paper
-            'Q13442814',  # scientific article
-            'Q21481766',  # academic chapter
-            'Q47461344',  # written work
-            'Q54670950',  # conference poster
-            'Q58632367',  # conference abstract
+            'Q4119870',  # academic writing
+            'Q5707594',    # news article
+            'Q10870555',   # report
+            'Q10885494',   # scientific conference paper
+            'Q13442814',   # scholarly article
+            'Q7318358',    # review article
+            'Q15621286',   # intellectual work
+            'Q17928402',   # blog post
+            'Q21481766',   # academic chapter
+            'Q23927052',   # conference article
+            'Q30070590',   # magazine article
+            'Q43305660',  # United States patent
+            'Q45182324',  # retracted article
+            'Q47461344',   # written work
+            'Q54670950',   # conference poster
+            'Q56119332',   # tweet
+            'Q58632367',   # conference abstract
+            'Q64548048',   # environmental impact assessment report
+            'Q110716513',  # scholarly letter/reply
     ]):
         class_ = 'work'
     elif set(classes).intersection([
@@ -901,6 +1206,7 @@ def q_to_class(q):
             'Q3918',  # university
             'Q31855',  # research institute
             'Q38723',  # higher education institution
+            'Q162633',  # academy
             'Q414147',  # academy of sciences
             'Q484652',  # international organization
             'Q748019',  # scientific society
@@ -925,9 +1231,13 @@ def q_to_class(q):
             ]):
         class_ = 'event_series'
     elif set(classes).intersection([
+            'Q1543677',  # online conference
             'Q1656682',  # event
             'Q27968055',  # recurrent event edition (event in a series)
             'Q52260246',  # scientific event
+            'Q98381855',  # online scholar conference
+            'Q98381912',  # online scholarly workshop
+            'Q112748789',  # hybrid scholarly conference
             ]):
         class_ = 'event'
     elif set(classes).intersection([
@@ -942,6 +1252,7 @@ def q_to_class(q):
             'Q79529',  # chemical substance
             'Q407595',  # metabolite
             'Q2393187',  # molecular entity
+            'Q113145171',  # type of a chemical entity
             ]):
         class_ = 'chemical'
     elif set(classes).intersection([
@@ -949,9 +1260,9 @@ def q_to_class(q):
             ]):
         class_ = 'chemical_element'
     elif set(classes).intersection([
-            'Q15711994',  # family of isomeric compounds
+            'Q15711994',  # group of isomeric compounds
             'Q17339814',  # group or class of chemical substances
-            'Q47154513',  # structural class of chemical compounds
+            'Q47154513',  # structural class of chemical entities
             'Q55499636',  # pharmacological class of chemical compounds
             'Q55640599',  # group of ions
             'Q55662456',  # group of ortho, meta, para isomers
@@ -965,6 +1276,28 @@ def q_to_class(q):
             ]):
         class_ = 'chemical_class'
     elif set(classes).intersection([
+            'Q324254',  # ontology
+            'Q1437388',  # formal ontology
+            'Q1925081',  # meta-modeling
+            'Q3882785',  # upper ontology
+            'Q6546616',  # lightweight ontology
+            'Q6822257',  # Meta-ontology
+            'Q7247296',  # process ontology
+            'Q7554009',  # soft ontology
+            'Q7977959',  # weak ontology
+            'Q56316737',  # domain ontology
+            'Q56316739',  # task ontology
+            'Q56316745',  # application ontology
+            'Q62210692',  # OWL ontology
+            'Q81314568',  # OBO Foundry ontology
+            'Q96626931',  # disaster ontology
+            'Q105846678',  # unit ontology
+            'Q113006088',  # orphaned ontology
+            'Q113006099',  # inactive ontology
+            ]):
+        class_ = 'ontology'
+    elif set(classes).intersection([
+            'Q2996394',  # biological process (Reactome pathway)
             'Q4915012',  # biological pathway
             ]):
         class_ = 'pathway'
@@ -973,27 +1306,53 @@ def q_to_class(q):
             ]):
         class_ = 'taxon'
     elif set(classes).intersection([
+            'Q1172284',  # data set
+            ]):
+        class_ = 'dataset'
+    elif set(classes).intersection([
             'Q46855',  # hackathon
             'Q625994',  # conference
             'Q2020153',  # scientific conference
-            'Q40444998',  # akademic workshop
+            'Q40444998',  # academic workshop
             ]):
         class_ = 'event'
     elif set(classes).intersection([
+            'Q341',  # free software
             'Q7397',  # software
-            'Q1172284',  # dataset
             'Q1639024',  # mathematical software
             'Q21127166',  # Java software library
             'Q21129801',  # natural language processing toolkit
-            'Q22811662',  # image database
             'Q24529812',  # statistical package
             ]):
+        class_ = 'software'
+    elif set(classes).intersection([
+            'Q22811662',  # image database
+            ]):
         class_ = 'use'
+    elif set(classes).intersection([
+            'Q420927',  # protein complex
+            'Q22325163',  # macromolecular complex
+            ]):
+        class_ = 'complex'
+    elif set(classes).intersection([
+            'Q24634210',  # podcast
+            ]):
+        class_ = 'podcast'
+    elif set(classes).intersection([
+            'Q69154911',  # podcast season
+            ]):
+        class_ = 'podcast_season'
+    elif set(classes).intersection([
+            'Q61855877',  # podcast episode
+            ]):
+        class_ = 'podcast_episode'
+    elif ('Q16695773' in classes):  # wikiproject
+        class_ = 'wikiproject'
     else:
         query = 'select ?class where {{ wd:{q} wdt:P279+ ?class }}'.format(
             q=escape_string(q))
 
-        url = 'https://query.wikidata.org/sparql'
+        url = SPARQL_ENDPOINT
         params = {'query': query, 'format': 'json'}
         response = requests.get(url, params=params, headers=HEADERS)
         data = response.json()
@@ -1001,10 +1360,20 @@ def q_to_class(q):
                    for item in data['results']['bindings']]
 
         if set(parents).intersection([
+                'Q40050',  # drink
+                ]):
+            class_ = 'topic'
+        elif set(parents).intersection([
                 'Q11173',  # chemical compound
                 'Q79529',  # chemical substance
+                'Q15711994',  # group of isomeric entities
+                'Q47154513',  # structural class of chemical entities
                 ]):
             class_ = 'chemical_class'
+        elif set(parents).intersection([
+                'Q1172284',  # data set
+                ]):
+            class_ = 'dataset'
         else:
             class_ = 'topic'
 
@@ -1030,12 +1399,14 @@ def twitter_to_qs(twitter):
     True
 
     """
-    # This query only matches on exact match
-    query = """select ?item
-               where {{ ?item wdt:P2002 "{twitter}" }}""".format(
-        twitter=escape_string(twitter))
+    # This query matches exact and lowercased version of username
+    query = """SELECT DISTINCT ?item
+               WHERE {{ VALUES ?username {{ "{twitter}" "{lower}" }}
+                        ?item wdt:P2002 ?username }}""".format(
+        twitter=escape_string(twitter), lower=escape_string(twitter).lower()
+    )
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1068,7 +1439,7 @@ def github_to_qs(github):
                where {{ ?item wdt:P2037 "{github}" }}""".format(
         github=escape_string(github))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1101,7 +1472,7 @@ def inchikey_to_qs(inchikey):
                where {{ ?item wdt:P235 "{inchikey}" }}""".format(
         inchikey=escape_string(inchikey))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1134,7 +1505,7 @@ def cordis_to_qs(cordis):
                where {{ ?item wdt:P3400 "{cordis}" }}""".format(
         cordis=escape_string(cordis))
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1167,7 +1538,7 @@ def cas_to_qs(cas):
                where {{ ?item wdt:P231 "{cas}" }}""".format(
         cas=cas)
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1201,7 +1572,7 @@ def lipidmaps_to_qs(lmid):
     query = """select ?item
                where {{ ?item wdt:P2063 "{lmid}" }}""".format(
         lmid=lmid)
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1234,7 +1605,7 @@ def atomic_number_to_qs(atomic_number):
                WHERE {{ ?item wdt:P31 wd:Q11344 ; wdt:P1086 ?number .
                  FILTER (STR(?number) = "{atomic_number}") }}""".format(
         atomic_number=atomic_number)
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1266,7 +1637,7 @@ def atomic_symbol_to_qs(symbol):
     query = """SELECT ?item
                WHERE {{ ?item wdt:P246 "{symbol}" }}""".format(
         symbol=symbol)
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url, params=params, headers=HEADERS)
     data = response.json()
@@ -1300,7 +1671,7 @@ def website_to_qs(url):
     query = 'SELECT ?work WHERE {{ ?work wdt:P856 <{url}> }}'.format(
         url=url.strip())
 
-    url_ = 'https://query.wikidata.org/sparql'
+    url_ = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
     response = requests.get(url_, params=params, headers=HEADERS)
     data = response.json()
@@ -1353,6 +1724,87 @@ def random_author():
     return q
 
 
+def random_work():
+    """Return random work.
+
+    Sample a scientific work randomly from Wikidata by a call to the Wikidata
+    Query Service.
+
+    Returns
+    -------
+    q : str
+        Wikidata identifier.
+
+    Notes
+    -----
+    The work returned is not necessarily a scholarly work.
+
+    The algorithm uses a somewhat hopeful randomization and if no work is
+    found it falls back on Q21146099.
+
+    Examples
+    --------
+    >>> q = random_work()
+    >>> q.startswith('Q')
+    True
+
+    """
+    # Generate 100 random Q-items and hope that one of them is a work with an
+    # work
+    values = " ".join("wd:Q{}".format(randrange(1, 100000000))
+                      for _ in range(100))
+
+    query = """SELECT ?work {{
+                 VALUES ?work {{ {values} }}
+                 ?work wdt:P50 ?author .
+               }}
+               LIMIT 1""".format(values=values)
+    bindings = query_to_bindings(query)
+    if len(bindings) > 0:
+        q = bindings[0]['work']['value'][31:]
+    else:
+        # Fallback
+        q = "Q21146099"
+    return q
+
+
+def random_podcast():
+    """Return random podcast.
+
+    Sample a podcast randomly from Wikidata by a call to the Wikidata
+    Query Service.
+
+    Returns
+    -------
+    q : str
+        Wikidata identifier.
+
+    Notes
+    -----
+    The work returned is not necessarily a podcast.
+
+    The algorithm uses a somewhat hopeful randomization and if no work is
+    found it falls back on Q21146099.
+
+    Examples
+    --------
+    >>> q = random_work()
+    >>> q.startswith('Q')
+    True
+
+    """
+    query = """SELECT ?podcast {{
+                 ?podcast wdt:P31 wd:Q24634210 .
+               }}"""
+    bindings = query_to_bindings(query)
+    if len(bindings) > 0:
+        q = bindings[randrange(1, len(bindings))]['podcast']['value'][31:]
+    else:
+        # Fallback
+        q = "Q124363332"
+    return q
+
+
 def main():
     """Handle command-line interface."""
     from docopt import docopt
@@ -1366,6 +1818,16 @@ def main():
 
     elif arguments['arxiv-to-q']:
         qs = arxiv_to_qs(arguments['<arxiv>'])
+        if len(qs) > 0:
+            print(qs[0])
+
+    elif arguments['biorxiv-to-q']:
+        qs = biorxiv_to_qs(arguments['<biorxiv>'])
+        if len(qs) > 0:
+            print(qs[0])
+
+    elif arguments['chemrxiv-to-q']:
+        qs = chemrxiv_to_qs(arguments['<chemrxiv>'])
         if len(qs) > 0:
             print(qs[0])
 
@@ -1432,6 +1894,11 @@ def main():
         if len(qs) > 0:
             print(qs[0])
 
+    elif arguments['omim-to-q']:
+        qs = omim_to_qs(arguments['<omimID>'])
+        if len(qs) > 0:
+            print(qs[0])
+
     elif arguments['orcid-to-q']:
         qs = orcid_to_qs(arguments['<orcid>'])
         if len(qs) > 0:
@@ -1449,6 +1916,11 @@ def main():
 
     elif arguments['ror-to-q']:
         qs = ror_to_qs(arguments['<rorid>'])
+        if len(qs) > 0:
+            print(qs[0])
+
+    elif arguments['uniprot-to-q']:
+        qs = uniprot_to_qs(arguments['<protein>'])
         if len(qs) > 0:
             print(qs[0])
 
@@ -1472,6 +1944,10 @@ def main():
 
     elif arguments['random-author']:
         q = random_author()
+        print(q)
+
+    elif arguments['random-work']:
+        q = random_work()
         print(q)
 
     elif arguments['twitter-to-q']:

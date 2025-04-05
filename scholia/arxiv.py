@@ -15,26 +15,16 @@ References
 
 from __future__ import absolute_import, division, print_function
 
-from dateutil.parser import parse as parse_datetime
-
 import json
-
 import os
-from os import write
-
 import re
 
-try:
-    # lxml can only be loaded into one interpreter per process.
-    # A webservice running uwsgi with multiple interpreters may fail to load
-    # the lxml library.
-    # Workarounds exists https://stackoverflow.com/questions/54092324/ but
-    # it may not be possible to implement.
-    from lxml import etree
-except ImportError:
-    from xml import etree
+import sys
 
 import requests
+from feedparser import parse as parse_api
+
+from .qs import paper_to_quickstatements
 
 
 USER_AGENT = 'Scholia'
@@ -55,16 +45,16 @@ def get_metadata(arxiv):
 
     Returns
     -------
-    metadata : dict
-        Dictionary with metadata.
+    metadata : dict or None
+        Dictionary with metadata. None is returned if the identifier is not
+        found.
 
     Notes
     -----
     This function queries arXiv. It must not be used to crawl arXiv.
     It does not look at robots.txt.
 
-    This function currently uses 'abs' HTML pages and not the arXiv API or
-    https://arxiv.org/help/oa/index which is the approved way.
+    The language is set to English.
 
     References
     ----------
@@ -76,101 +66,89 @@ def get_metadata(arxiv):
     >>> metadata = get_metadata('1503.00759')
     >>> metadata['doi'] == '10.1109/JPROC.2015.2483592'
     True
+    >>> 'error' in get_metadata('5432.01234')
+    True
 
     """
     arxiv = arxiv.strip()
-    url = ARXIV_URL + '/abs/' + arxiv
-    headers = {'User-agent': USER_AGENT}
-    response = requests.get(url, headers=headers)
-    tree = etree.HTML(response.content)
 
-    submissions = tree.xpath('//div[@class="submission-history"]/text()')
-    submissions = [
-        submission
-        for submission in submissions
-        if len(submission.strip()) > 0
-    ]
-    datetime_as_string = submissions[-1][5:30]
-    isodatetime = parse_datetime(datetime_as_string).isoformat()
+    url = ARXIV_URL + "api/query?id_list=" + arxiv
+    try:
+        response = requests.get(url)
 
-    subjects = tree.xpath(
-        '//td[@class="tablecell subjects"]/span/text()'
-        '|'
-        '//td[@class="tablecell subjects"]/text()')
-    arxiv_classifications = [
-        match
-        for subject in subjects
-        for match in re.findall(r'\((.*?)\)', subject)
-    ]
+        if response.status_code == 200:
+            feed = parse_api(response.content)
+            entry = feed.entries[0]
 
-    metadata = {
-        'arxiv': arxiv,
-        'authornames': tree.xpath('//div[@class="authors"]/a/text()'),
-        'full_text_url': 'https://arxiv.org/pdf/' + arxiv + '.pdf',
-        'publication_date': isodatetime[:10],
-        'title': re.sub(r'\s+', ' ', tree.xpath('//h1/text()')[-1].strip()),
-        'arxiv_classifications': arxiv_classifications,
-    }
+            if "link" not in entry:
+                return {'error': "Not found"}
+            publication_date = entry.published[:10]
+            metadata = {
+                'arxiv': arxiv,
+                'authors': [author.name for author in entry.authors],
+                'full_text_url': f'https://arxiv.org/pdf/{arxiv}.pdf',
+                'date_P577': f'+{publication_date}T00:00:00Z/11',
+                'date': publication_date,
 
-    # Optional DOI
-    doi = tree.xpath('//td[@class="tablecell doi"]/a/text()')
-    if not doi:
-        doi = tree.xpath('//td[@class="tablecell msc_classes"]/a/text()')
-    if doi:
-        metadata['doi'] = doi[0]
+                # Some titles may have a newline in them. This should be
+                # converted to an ordinary space character
+                'title': re.sub(r'\s+', ' ', entry.title),
 
-    return metadata
+                # Take that arXiv articles are always in English
+                'language_q': "Q1860",
+
+                'arxiv_classifications': [tag.term for tag in entry.tags],
+            }
+
+            # Optional DOI
+            if "arxiv_doi" in entry:
+                metadata['doi'] = entry.arxiv_doi.upper()
+
+            return metadata
+        else:
+            # Handle non-200 status codes (e.g., 404, 500) appropriately
+            status_code = response.status_code
+            return {'error': f'Request failed with status code {status_code}'}
+
+    except requests.exceptions.RequestException:
+        # connection timeout, DNS resolution error, etc
+        return {'error': 'Request failed due to a network error'}
+    except Exception:
+        return {'error': 'An unexpected error occurred'}
 
 
-def metadata_to_quickstatements(metadata):
-    """Convert metadata to quickstatements.
+def string_to_arxivs(string):
+    """Extract arxiv IDs from string.
 
-    Convert metadata about a ArXiv article represented in a dict to a
-    format so it can copy and pasted into Magnus Manske quickstatement web tool
-    to populate Wikidata.
-
-    This function does not check whether the item already exists.
+    Multiple arXiv identifier part of `string` will be extracted, where the
+    identifier pattern should be in the format of a series of digits
+    followed by a period followed by a series of digits. Other formats
+    will not be matched. If multiple identifier patterns are in the input
+    string then only the first is returned.
 
     Parameters
     ----------
-    metadata : dict
-        Dictionary with metadata.
+    string : str
+        String with arxiv ID.
 
     Returns
     -------
-    quickstatements : str
-        String with quickstatements.
+    arxivs : list of str
+        String with arxiv IDs.
 
-    References
-    ----------
-    - https://wikidata-todo.toolforge.org/quick_statements.php
+    Examples
+    --------
+    >>> string = "2210.03493 http://arxiv.org/abs/1103.2903"
+    >>> arxivs = string_to_arxivs(string)
+    >>> '1103.2903' in arxivs
+    True
+    >>> "2210.03493" in arxivs
+    True
 
     """
-    qs = u"CREATE\n"
-    qs += u'LAST\tP818\t"{}"\n'.format(metadata['arxiv'])
-    qs += u'LAST\tP31\tQ13442814\n'
-    qs += u'LAST\tLen\t"{}"\n'.format(metadata['title'].replace('"', '\"'))
-    qs += u'LAST\tP1476\ten:"{}"\n'.format(
-        metadata['title'].replace('"', '\"'))
-    qs += u'LAST\tP577\t+{}T00:00:00Z/11\n'.format(
-        metadata['publication_date'][:10])
-    qs += u'LAST\tP953\t"{}"\n'.format(
-        metadata['full_text_url'].replace('"', '\"'))
-
-    # Optional DOI
-    if 'doi' in metadata:
-        qs += u'LAST\tP356\t"{}"\n'.format(
-            metadata['doi'].replace('"', '\"'))
-
-    # arXiv classifications such as "cs.LG"
-    for classification in metadata['arxiv_classifications']:
-        qs += u'LAST\tP820\t"{}"\n'.format(
-            classification.replace('"', '\"'))
-
-    for n, authorname in enumerate(metadata['authornames'], start=1):
-        qs += u'LAST\tP2093\t"{}"\tP1545\t"{}"\n'.format(
-            authorname.replace('"', '\"'), n)
-    return qs
+    PATTERN = re.compile(r'\d{4}\.\d+', flags=re.DOTALL | re.UNICODE)
+    arxivs = PATTERN.findall(string)
+    return arxivs
 
 
 def string_to_arxiv(string):
@@ -200,8 +178,7 @@ def string_to_arxiv(string):
     True
 
     """
-    PATTERN = re.compile(r'\d+\.\d+', flags=re.DOTALL | re.UNICODE)
-    arxivs = PATTERN.findall(string)
+    arxivs = string_to_arxivs(string)
     if len(arxivs) > 0:
         return arxivs[0]
     return None
@@ -223,15 +200,25 @@ def main():
     output_encoding = 'utf-8'
 
     if arguments['get-metadata']:
-        arxiv = arguments['<arxiv>']
+        string = arguments['<arxiv>']
+        arxiv = string_to_arxiv(string)
+        if not arxiv:
+            sys.exit("No arXiv identifier matched")
         metadata = get_metadata(arxiv)
+        if not metadata:
+            sys.exit("Could not get metadata for arXix {}".format(arxiv))
         print(json.dumps(metadata))
 
     elif arguments['get-quickstatements']:
-        arxiv = arguments['<arxiv>']
+        string = arguments['<arxiv>']
+        arxiv = string_to_arxiv(string)
+        if not arxiv:
+            sys.exit("No arXiv identifier matched")
         metadata = get_metadata(arxiv)
-        quickstatements = metadata_to_quickstatements(metadata)
-        write(output_file, quickstatements.encode(output_encoding))
+        if not metadata:
+            sys.exit("Could not get metadata for arXix {}".format(arxiv))
+        quickstatements = paper_to_quickstatements(metadata)
+        os.write(output_file, quickstatements.encode(output_encoding))
 
     else:
         assert False

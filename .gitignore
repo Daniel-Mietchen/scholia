@@ -90,3 +90,13 @@ ENV/
 
 # Emacs backup files
 *~
+
+# Jetbrains
+.idea
+
+# Eclipse
+.pydev
+.pydevproject
+
+# VirtualFish files
+.venv

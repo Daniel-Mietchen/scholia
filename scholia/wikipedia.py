@@ -22,13 +22,17 @@ from __future__ import absolute_import, print_function
 import logging
 
 import os
-from os import write
 
 import signal
 
 import requests
 
 from six import b, u
+
+from .config import config
+
+
+SPARQL_ENDPOINT = config['query-server'].get('sparql_endpoint')
 
 
 BIBLIOGRAPHY_SPARQL_QUERY = """
@@ -104,9 +108,10 @@ def q_to_bibliography_templates(q):
 
     """
     query = BIBLIOGRAPHY_SPARQL_QUERY.format(q=q)
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': query, 'format': 'json'}
-    response = requests.get(url, params=params)
+    headers = {'User-Agent': config['requests'].get('user_agent')}
+    response = requests.get(url, params=params, headers=headers)
     data = response.json()
 
     wikitext = ('<!-- Generated with scholia.wikipedia '
@@ -174,7 +179,7 @@ def main():
     if arguments['q-to-bibliography-templates']:
         q = arguments['<q>']
         wikitext = q_to_bibliography_templates(q)
-        write(output_file, wikitext.encode(output_encoding) + b('\n'))
+        os.write(output_file, wikitext.encode(output_encoding) + b('\n'))
 
 
 if __name__ == "__main__":

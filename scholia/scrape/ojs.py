@@ -2,10 +2,12 @@ r"""Scraping Open Journal Systems.
 
 Usage:
   scholia.scrape.ojs scrape-paper-from-url <url>
+  scholia.scrape.ojs issue-url-to-quickstatements [options] <url>
   scholia.scrape.ojs paper-url-to-q <url>
   scholia.scrape.ojs paper-url-to-quickstatements [options] <url>
 
 Options:
+  --iso639=iso639 Overwrite default iso639
   -o --output=file  Output filename, default output to stdout
   --oe=encoding     Output encoding [default: utf-8]
 
@@ -29,12 +31,15 @@ from lxml import etree
 
 import requests
 
+from ..config import config
 from ..qs import paper_to_quickstatements
 from ..query import iso639_to_q, issn_to_qs
-from ..utils import escape_string
+from ..utils import escape_string, pages_to_number_of_pages
 
 
-USER_AGENT = 'Scholia'
+SPARQL_ENDPOINT = config['query-server'].get('sparql_endpoint')
+
+USER_AGENT = config['requests'].get('user_agent')
 
 HEADERS = {'User-Agent': USER_AGENT}
 
@@ -42,43 +47,90 @@ PAPER_TO_Q_QUERY = u("""
 SELECT ?paper WHERE {{
   OPTIONAL {{ ?label rdfs:label "{label}"@en . }}
   OPTIONAL {{ ?title wdt:P1476 "{title}"@en . }}
-  OPTIONAL {{ ?url wdt:P953 <{url}> . }}
-  BIND(COALESCE(?full_text_url, ?url, ?label, ?title) AS ?paper)
+  OPTIONAL {{ ?full_text_url wdt:P953 <{url}> . }}
+  OPTIONAL {{ ?url wdt:P856 <{url}> . }}
+  BIND(COALESCE(?full_text_url, ?url, ?label, ?title, ?doi) AS ?paper)
 }}
 """)
 
-# SPARQL Endpoint for Wikidata Query Service
-WDQS_URL = 'https://query.wikidata.org/sparql'
+SHORT_TITLED_PAPER_TO_Q_QUERY = u("""
+SELECT ?paper WHERE {{
+  OPTIONAL {{ ?full_text_url wdt:P953 <{url}> . }}
+  OPTIONAL {{ ?url wdt:P856 <{url}> . }}
+  BIND(COALESCE(?full_text_url, ?url) AS ?paper)
+}}
+""")
 
 
-def pages_to_number_of_pages(pages):
-    """Compute number of pages based on pages represented as string.
+def issue_url_to_paper_urls(url):
+    """Scrape paper URLs from issue URL.
+
+    Scrape paper (article) URLs from a given Open Journal System
+    issue URL.
 
     Parameters
     ----------
-    pages : str
-        Pages represented as a string.
+    url : str
+        URL to an OJS issue.
 
     Returns
     -------
-    number_of_pages : int or None
-        Number of pages returned as an integer. If the conversion is not
-        possible then None is returned.
+    urls : list of strs
+        List of URLs to papers.
 
-    Examples
-    --------
-    >>> pages_to_number_of_pages('61-67')
-    7
+    Notes
+    -----
+    Based on the URL, the HTML issue webpage will be fetched and the returned
+    HTML parsed. Different matching approached are tried to extract the article
+    URLs.
 
     """
-    number_of_pages = None
-    page_elements = pages.split('-')
-    if len(page_elements) == 2:
-        try:
-            number_of_pages = int(page_elements[1]) - int(page_elements[0]) + 1
-        except ValueError:
-            pass
-    return number_of_pages
+    response = requests.get(url, headers=HEADERS)
+    tree = etree.HTML(response.content)
+    urls = tree.xpath("//div[@class='title']/a/@href")
+    if len(urls) == 0:
+        # This scheme seems to be used for version 3.2.1.4 of OJS
+        urls = tree.xpath("//h3[@class='title']/a/@href")
+    if len(urls) == 0:
+        # This scheme is also used in version 3.2.1.4 of OJS
+        # For instance, for https://tidsskrift.dk/bras/issue/view/9150
+        urls = tree.xpath("//h3[@class='media-heading']/a/@href")
+    if len(urls) == 0:
+        # For instance, for
+        # https://www.journals.vu.lt/scandinavistica/issue/view/1153
+        urls = tree.xpath("//div[@class='article-summary-title']/a/@href")
+    if len(urls) == 0:
+        # Targeting specific class 'summary_title'
+        urls = tree.xpath("//a[@class='summary_title']/@href")
+    return urls
+
+
+def issue_url_to_quickstatements(url, iso639=None):
+    """Return Quickstatements for papers in an issue.
+
+    From a Open Journal System issue URL extract metadata for individual
+    papers and format them in the Quickstatement format for entry in
+    Wikidata.
+
+    Parameters
+    ----------
+    url : str
+        URL for a OJS issue.
+    iso639 : str, optional
+        String with ISO639 code. Default is None, meaning the iso639 will be
+        read from the metadata.
+
+    Returns
+    -------
+    qs : str
+        String with quickstatements.
+
+    """
+    paper_urls = issue_url_to_paper_urls(url)
+    qs = ''
+    for paper_url in paper_urls:
+        qs += paper_url_to_quickstatements(paper_url, iso639=iso639) + "\n"
+    return qs
 
 
 def paper_to_q(paper):
@@ -100,7 +152,8 @@ def paper_to_q(paper):
     present in Wikidata.
 
     The match on title is using an exact query, meaning that any variation in
-    lowercase/uppercase will not find the Wikidata item.
+    lowercase/uppercase will not find the Wikidata item. If the title is
+    shorter than 21 character then only the URL is used to match.
 
     Examples
     --------
@@ -112,12 +165,18 @@ def paper_to_q(paper):
     'Q61708017'
 
     """
-    title = escape_string(paper['title'])
-    query = PAPER_TO_Q_QUERY.format(
-        label=title, title=title,
-        url=paper['url'])
+    if 'title' in paper and len(paper['title']) > 20:
+        title = escape_string(paper['title'])
 
-    response = requests.get(WDQS_URL,
+        query = PAPER_TO_Q_QUERY.format(
+            label=title, title=title,
+            url=paper['url'])
+    else:
+        # The title is too short to match. Too many wrong matches.
+        query = SHORT_TITLED_PAPER_TO_Q_QUERY.format(
+            url=paper['url'])
+
+    response = requests.get(SPARQL_ENDPOINT,
                             params={'query': query, 'format': 'json'},
                             headers=HEADERS)
     data = response.json()['results']['bindings']
@@ -138,7 +197,7 @@ def paper_url_to_q(url):
     Parameters
     ----------
     url : str
-        URL to NIPS HTML page.
+        URL to Open Journal System article webpage.
 
     Returns
     -------
@@ -147,7 +206,7 @@ def paper_url_to_q(url):
 
     Examples
     --------
-    >>> url = 'https://journals.uio.no/index.php/osla/article/view/5855'
+    >>> url ='https://journals.uio.no/index.php/osla/article/view/5855'
     >>> paper_url_to_q(url)
     'Q61708017'
 
@@ -157,7 +216,7 @@ def paper_url_to_q(url):
     return q
 
 
-def paper_url_to_quickstatements(url):
+def paper_url_to_quickstatements(url, iso639=None):
     """Scrape OJS paper and return quickstatements.
 
     Given a URL to a HTML web page representing a paper formatted by the Open
@@ -168,14 +227,38 @@ def paper_url_to_quickstatements(url):
     ----------
     url : str
         URL to OJS paper as a string.
+    iso639 : str, optional
+        String with ISO639 language code. Default is None, meaning the iso639
+        will be read from the metadata.
 
     Returns
     -------
     qs : str
         Quickstatements for paper as a string.
 
+    Notes
+    -----
+    It the paper is already entered in Wikidata then a comment will just
+    be produced, - no quickstatements.
+
+    The quickstatement tool is available at
+    https://quickstatements.toolforge.org.
+
     """
+    if url.endswith('/'):
+        # remove trailing '/' from the URL
+        url = url[:-1]
+
     paper = scrape_paper_from_url(url)
+
+    if iso639 is not None:
+        paper['iso639'] = iso639
+        paper['language_q'] = iso639_to_q(iso639)
+
+    q = paper_to_q(paper)
+    if q:
+        return "# {q} is {url}".format(q=q, url=url)
+
     qs = paper_to_quickstatements(paper)
     return qs
 
@@ -211,10 +294,10 @@ def scrape_paper_from_url(url):
     def _fields_to_content(fields):
         for field in fields:
             content = _field_to_content(field)
-            if content is not None:
+            if content is not None and content != '':
                 return content
-        else:
-            return None
+
+        return None
 
     entry = {'url': url}
 
@@ -233,12 +316,28 @@ def scrape_paper_from_url(url):
             for author_element in
             tree.xpath("//meta[@name='DC.Creator.PersonalName']")
         ]
-        if len(authors) > 1:
+        if len(authors) > 0:
             entry['authors'] = authors
 
-    title = _fields_to_content(['citation_title', 'DC.Title'])
+    title = _fields_to_content(['citation_title', 'DC.Title',
+                                'DC.Title.Alternative'])
     if title is not None:
-        entry['title'] = title
+        q = paper_to_q(entry)
+        if not q:  # If not identified before modification
+            # Replace dash or colon without altering surrounding spaces
+            modified_title = title.replace(" –", ":").replace("– ", ":")
+            if modified_title != title:  # Check if replacement is made
+                entry['title'] = modified_title
+                q = paper_to_q(entry)
+                if q:  # If identified after modification
+                    # Plug in the modified title
+                    entry['title'] = modified_title
+                else:
+                    entry['title'] = title  # Plug in the original title
+            else:
+                entry['title'] = title
+        else:
+            entry['title'] = title
 
     citation_date = _fields_to_content(['citation_date', 'DC.Date.issued'])
     if citation_date is not None:
@@ -265,11 +364,17 @@ def scrape_paper_from_url(url):
     else:
         pages = _field_to_content('DC.Identifier.pageNumber')
     if pages is not None:
-        entry['pages'] = pages
-
         number_of_pages = pages_to_number_of_pages(pages)
         if number_of_pages is not None:
             entry['number_of_pages'] = number_of_pages
+
+        pages_parts = pages.split('-')
+        if len(pages_parts) == 2 and pages_parts[0] == pages_parts[1]:
+            # One-page publication
+            entry['pages'] = pages_parts[0]
+        else:
+            # Multiple pages
+            entry['pages'] = pages
 
     pdf_url = _field_to_content('citation_pdf_url')
     if pdf_url is not None:
@@ -282,8 +387,11 @@ def scrape_paper_from_url(url):
         if len(pdf_urls) > 0:
             entry['full_text_url'] = pdf_urls[0]
 
+    # There may be inconsistent metadata for the language.
+    # For for instance, https://tidsskrift.dk/sygdomogsamfund/article/view/579
+    # "DC.Language" is correct, while "citation_language" is wrong.
     language_as_iso639 = _fields_to_content(
-        ['citation_language', 'DC.Language'])
+        ['DC.Language', 'citation_language'])
     if language_as_iso639 is not None:
         entry['iso639'] = language_as_iso639
         language_q = iso639_to_q(language_as_iso639)
@@ -315,6 +423,11 @@ def main():
 
     arguments = docopt(__doc__)
 
+    if arguments['--iso639']:
+        iso639 = arguments['--iso639']
+    else:
+        iso639 = None
+
     if arguments['--output']:
         output_filename = arguments['--output']
         output_file = os.open(output_filename, os.O_RDWR | os.O_CREAT)
@@ -326,14 +439,19 @@ def main():
     # Ignore broken pipe errors
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    if arguments['paper-url-to-q']:
+    if arguments['issue-url-to-quickstatements']:
+        url = arguments['<url>']
+        qs = issue_url_to_quickstatements(url, iso639=iso639)
+        os.write(output_file, qs.encode(output_encoding) + b('\n'))
+
+    elif arguments['paper-url-to-q']:
         url = arguments['<url>']
         entry = paper_url_to_q(url)
         print_(entry)
 
     elif arguments['paper-url-to-quickstatements']:
         url = arguments['<url>']
-        qs = paper_url_to_quickstatements(url)
+        qs = paper_url_to_quickstatements(url, iso639=iso639)
         os.write(output_file, qs.encode(output_encoding) + b('\n'))
 
     elif arguments['scrape-paper-from-url']:

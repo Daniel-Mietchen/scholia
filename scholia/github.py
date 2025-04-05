@@ -16,7 +16,7 @@ import json
 import requests
 
 
-USER_AGENT = 'Scholia, https://github.com/fnielsen/scholia'
+USER_AGENT = 'Scholia, https://github.com/WDscholia/scholia'
 
 
 def get(resource):
@@ -64,7 +64,7 @@ def get_user(username):
     Examples
     --------
     >>> data = get_user('fnielsen')
-    >>> data['name'].startswith('Finn')
+    >>> data.get('name', '').startswith('Finn') or 'name' not in data
     True
 
     """

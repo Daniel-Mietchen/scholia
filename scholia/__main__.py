@@ -4,6 +4,7 @@ Usage:
   scholia arxiv-to-quickstatements [options] <arxiv>
   scholia orcid-to-q <orcid>
   scholia string-to-type <string>
+  scholia run
 
 Options:
   -o --output=file  Output filename, default output to stdout
@@ -23,9 +24,9 @@ References
 from __future__ import absolute_import, division, print_function
 
 import os
-from os import write
 
 from . import arxiv
+from .qs import paper_to_quickstatements
 from .query import orcid_to_qs
 from .utils import string_to_type
 
@@ -48,8 +49,8 @@ def main():
     if arguments['arxiv-to-quickstatements']:
         arxiv_id = arguments['<arxiv>']
         metadata = arxiv.get_metadata(arxiv_id)
-        quickstatements = arxiv.metadata_to_quickstatements(metadata)
-        write(output_file, quickstatements.encode(output_encoding))
+        quickstatements = paper_to_quickstatements(metadata)
+        os.write(output_file, quickstatements.encode(output_encoding))
 
     elif arguments['orcid-to-q']:
         qs = orcid_to_qs(arguments['<orcid>'])
@@ -59,6 +60,15 @@ def main():
     elif arguments['string-to-type']:
         type = string_to_type(arguments['<string>'])
         print(type)
+
+    elif arguments['run']:
+        from .app import create_app
+        app = create_app(
+            text_to_topic_q_text_enabled=False,
+            third_parties_enabled=True,
+        )
+        app.config['APPLICATION_ROOT'] = '/'
+        app.run(debug=True, port=8100)
 
 
 if __name__ == '__main__':

@@ -7,8 +7,12 @@ Usage:
 
 from collections import OrderedDict
 
+from .config import config
+
 import requests
 
+
+SPARQL_ENDPOINT = config['query-server'].get('sparql_endpoint')
 
 EXAMPLE_SPARQL_QUERY = """
 SELECT ?item1 ?item1Label ?item2 ?item2Label ?weight
@@ -34,7 +38,7 @@ def write_pajek_from_sparql(filename, sparql):
     column1 = 'item1'
     column2 = 'item2'
 
-    url = 'https://query.wikidata.org/sparql'
+    url = SPARQL_ENDPOINT
     params = {'query': sparql, 'format': 'json'}
     response = requests.get(url, params=params)
     data = response.json()['results']['bindings']

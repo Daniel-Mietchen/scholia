@@ -65,12 +65,16 @@ def entity_to_smiles(entity):
     for statement in entity['claims'].get('P2017', []):
         smiles = statement['mainsnak']['datavalue']['value']
         return smiles
-    else:
-        for statement in entity['claims'].get('P233', []):
-            smiles = statement['mainsnak']['datavalue']['value']
-            return smiles
-        else:
-            return ''
+
+    for statement in entity['claims'].get('P233', []):
+        smiles = statement['mainsnak']['datavalue']['value']
+        return smiles
+
+    for statement in entity['claims'].get('P10718', []):
+        smiles = statement['mainsnak']['datavalue']['value']
+        return smiles
+
+    return ''
 
 
 def is_human(entity):
@@ -119,9 +123,10 @@ def select_value_by_language_preferences(
     for preference in preferences:
         if preference in choices:
             return choices[preference]
-    else:
-        # Select a random one
-        return next(choices.itervalues())
+
+    # Select a random one
+    # iter here is for Python2
+    return next(iter(choices.values()))
 
 
 def wb_get_entities(qs):
@@ -179,7 +184,7 @@ def entity_to_authors(entity, return_humanness=False):
     entity : dict
         Dictionary with Wikidata item
     return_humanness : bool
-        Toogle whether return argument should contain be a list of strings or a
+        Toogle whether return argument should contain a list of strings or a
         list of tuples with both name and an indication of whether the author
         is a human. Some authors are organizations and formatting of authors
         may need to distinguish between humans and organizations.
@@ -283,8 +288,8 @@ def entity_to_doi(entity):
     for statement in entity['claims'].get('P356', []):
         doi = statement['mainsnak']['datavalue']['value']
         return doi
-    else:
-        return ''
+
+    return ''
 
 
 def entity_to_full_text_url(entity):
@@ -312,8 +317,8 @@ def entity_to_full_text_url(entity):
     for statement in entity['claims'].get('P953', []):
         url = statement['mainsnak']['datavalue']['value']
         return url
-    else:
-        return ''
+
+    return ''
 
 
 def entity_to_journal_title(entity):
@@ -456,8 +461,8 @@ def entity_to_pages(entity):
     for statement in entity['claims'].get('P304', []):
         pages = statement['mainsnak']['datavalue']['value']
         return pages
-    else:
-        return ''
+
+    return ''
 
 
 def entity_to_title(entity):
@@ -504,8 +509,8 @@ def entity_to_volume(entity):
     for statement in entity['claims'].get('P478', []):
         volume = statement['mainsnak']['datavalue']['value']
         return volume
-    else:
-        return ''
+
+    return ''
 
 
 def entity_to_year(entity):
@@ -529,43 +534,55 @@ def entity_to_year(entity):
     return None
 
 
-def search(query, limit=10):
+def search(query, page, limit=10):
     """Search Wikidata.
 
     Parameters
     ----------
     query : str
         Query string.
+    page : int
+        Number of current page.
     limit : int, optional
         Number of maximum search results to return.
 
     Returns
     -------
-    result : list of dicts
+    result : dict
 
     """
     # Query the Wikidata API
     response = requests.get(
         "https://www.wikidata.org/w/api.php",
         params={
-            'action': 'query',
-            'list': 'search',
-            'srlimit': limit,
-            'srsearch': query,
-            'srwhat': 'text',
+            'action': 'wbsearchentities',
+            'limit': limit,
             'format': 'json',
+            'language': "en",
+            'search': query,
+            'continue': page
         },
         headers=HEADERS)
-
     # Convert the response
     response_data = response.json()
-    items = response_data['query']['search']
+    items = response_data['search']
     results = [
-        {'q': item['title'],
-         'description': item['snippet']}
-        for item in items]
+        {
+            'q': item['title'],
+            'description': item.get('description', "No description provided"),
+            'label': item['label']
+        }
+        for item in items
+    ]
 
-    return results
+    data = {'results': results}
+
+    search_continue = response_data.get('search-continue', None)
+    if search_continue:
+        data['next_page'] = search_continue
+    if (int(page) - limit) >= 0:
+        data['prev_page'] = int(page) - limit
+    return data
 
 
 def main():

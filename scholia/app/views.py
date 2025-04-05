@@ -1,27 +1,35 @@
 """Views for app."""
 
+import datetime
 import re
 
 from flask import (Blueprint, current_app, redirect, render_template, request,
                    Response, url_for)
+from jinja2 import TemplateNotFound
 from werkzeug.routing import BaseConverter
 
 from ..api import entity_to_name, entity_to_smiles, search, wb_get_entities
 from ..rss import (wb_get_author_latest_works, wb_get_venue_latest_works,
                    wb_get_topic_latest_works, wb_get_organization_latest_works,
                    wb_get_sponsor_latest_works)
-from ..arxiv import metadata_to_quickstatements, string_to_arxiv
+from ..arxiv import string_to_arxiv, string_to_arxivs
 from ..arxiv import get_metadata as get_arxiv_metadata
+from ..doi import string_to_doi, get_doi_metadata
+from ..qs import paper_to_quickstatements
 from ..query import (arxiv_to_qs, cas_to_qs, atomic_symbol_to_qs, doi_to_qs,
-                     github_to_qs,
-                     inchikey_to_qs, issn_to_qs, orcid_to_qs, viaf_to_qs,
-                     q_to_class, q_to_dois, random_author, twitter_to_qs,
-                     cordis_to_qs, mesh_to_qs, pubmed_to_qs,
+                     doi_prefix_to_qs, github_to_qs, biorxiv_to_qs,
+                     chemrxiv_to_qs, omim_to_qs,
+                     identifier_to_qs, inchikey_to_qs, issn_to_qs, orcid_to_qs,
+                     viaf_to_qs, q_to_class, q_to_dois, random_author,
+                     twitter_to_qs, cordis_to_qs, mesh_to_qs, pubmed_to_qs,
                      lipidmaps_to_qs, ror_to_qs, wikipathways_to_qs,
                      pubchem_to_qs, atomic_number_to_qs, ncbi_taxon_to_qs,
-                     ncbi_gene_to_qs)
-from ..utils import sanitize_q
+                     ncbi_gene_to_qs, uniprot_to_qs, random_work,
+                     random_podcast)
+from ..utils import (remove_special_characters_url, sanitize_q, string_to_list,
+                     string_to_type)
 from ..wikipedia import q_to_bibliography_templates
+from ..config import config
 
 
 class RegexConverter(BaseConverter):
@@ -72,6 +80,12 @@ P_PATTERN = re.compile(r'P[1-9]\d*')
 # Wikidata item identifiers matcher
 qs_pattern = r'<regex(r"Q[1-9]\d*(?:[^0-9]+Q[1-9]\d*)*"):qs>'
 
+# https://www.crossref.org/blog/dois-and-matching-regular-expressions/
+DOI_PATTERN = re.compile(r'10\.\d{4,9}/[\[\]\-._;()/:A-Z0-9]+', re.IGNORECASE)
+
+# pattern for aspects
+ASPECT_PATTERN = '<regex("[a-zA-Z]+"):aspect>'
+
 
 @main.route("/")
 def index():
@@ -84,6 +98,23 @@ def index():
 
     """
     return render_template('index.html')
+
+
+@main.route("/statistics")
+def index_statistics():
+    """Return rendered main statistics page.
+
+    Returns
+    -------
+    html : str
+        Rederende HTML for main statistics page.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('index-statistics.html', sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route("/" + l_pattern)
@@ -114,6 +145,19 @@ def redirect_q(q):
     return redirect(url_for(method, q=q), code=302)
 
 
+@main.route('/property/')
+def show_property_index():
+    """Return property index page.
+
+    Returns
+    -------
+    html : str
+        Rendered index page for property view.
+
+    """
+    return render_template('property-index.html')
+
+
 @main.route("/" + p_pattern)
 def show_p(p):
     """Detect and redirect to Scholia class page.
@@ -125,6 +169,44 @@ def show_p(p):
 
     """
     return render_template('property.html', p=p)
+
+
+@main.route('/biorxiv/<biorxiv_id>')
+def show_biorxiv(biorxiv_id):
+    """Return HTML rendering for bioRxiv.
+
+    Parameters
+    ----------
+    biorxiv_id : str
+        bioRxiv identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    qs = biorxiv_to_qs(biorxiv_id)
+    return _render_work_qs(qs, "bioRxiv")
+
+
+@main.route('/chemrxiv/<chemrxiv_id>')
+def show_chemrxiv(chemrxiv_id):
+    """Return HTML rendering for ChemRxiv.
+
+    Parameters
+    ----------
+    chemrxiv_id : str
+        ChemRxiv identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    qs = chemrxiv_to_qs(chemrxiv_id)
+    return _render_work_qs(qs, "ChemRxiv")
 
 
 @main.route('/arxiv/<arxiv>')
@@ -143,18 +225,37 @@ def show_arxiv(arxiv):
 
     See Also
     --------
-    show_arxiv_to_quickstatements.
+    show_id_to_quickstatements.
 
     """
     qs = arxiv_to_qs(arxiv)
+    return _render_work_qs(qs, "arXiv")
+
+
+def _render_work_qs(qs, name):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_work', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find(name + " ID"))
 
 
-@main.route('/arxiv-to-quickstatements')
-def show_arxiv_to_quickstatements():
+@main.route("/arxiv-to-quickstatements")
+def redirect_arxiv_to_quickstatements():
+    """Redirect to id-to-quickstatements.
+
+    Returns
+    -------
+    reponse : werkzeug.wrappers.Response
+        Redirect
+
+    """
+    return redirect(
+        url_for("app.show_id_to_quickstatements", **request.args), code=301
+    )
+
+
+@main.route("/id-to-quickstatements")
+def show_id_to_quickstatements():
     """Return HTML rendering for arxiv.
 
     Will look after the 'arxiv' parameter.
@@ -169,34 +270,127 @@ def show_arxiv_to_quickstatements():
     show_arxiv.
 
     """
-    query = request.args.get('arxiv')
+    query = request.args.get("query")
+    current_app.logger.debug("query: {}".format(str(query)))
 
     if not query:
-        return render_template('arxiv_to_quickstatements.html')
+        return render_template("id-to-quickstatements.html")
 
-    current_app.logger.debug("query: {}".format(query))
+    input_list = string_to_list(query)
 
-    arxiv = string_to_arxiv(query)
-    if not arxiv:
-        # Could not identify an arxiv identifier
-        return render_template('arxiv_to_quickstatements.html')
+    ids = {string: {"type": string_to_type(string)} for string in input_list}
 
-    qs = arxiv_to_qs(arxiv)
-    if len(qs) > 0:
-        # The arxiv is already in Wikidata
-        q = qs[0]
-        return render_template('arxiv_to_quickstatements.html',
-                               arxiv=arxiv, q=q)
+    to_id_mapping = {"arxiv": string_to_arxiv, "doi": string_to_doi}
 
-    try:
-        metadata = get_arxiv_metadata(arxiv)
-    except Exception:
-        return render_template('arxiv_to_quickstatements.html',
-                               arxiv=arxiv)
+    for identifier, d in ids.items():
+        fun = to_id_mapping.get(d["type"])
+        if fun:
+            ids[identifier]["id"] = fun(identifier)
 
-    quickstatements = metadata_to_quickstatements(metadata)
-    return render_template('arxiv_to_quickstatements.html',
-                           arxiv=arxiv, quickstatements=quickstatements)
+    if all(["id" not in v for v in ids.values()]):
+        # Could not identify an identifier
+        return render_template("id-to-quickstatements.html", query=query)
+
+    # Match identifier to Q-identifier if found
+    to_qid_mapping = {"arxiv": arxiv_to_qs, "doi": doi_to_qs}
+    for identifier, d in ids.items():
+        fun = to_qid_mapping.get(d["type"])
+        if fun and "id" in d and d["id"] is not None:
+            ids[identifier]["qid"] = fun(d["id"])
+
+    identified_qs = [
+        [v["id"], v["qid"][0]]
+        for v in ids.values()
+        if "qid" in v and len(v["qid"]) > 0
+    ]
+    missing_arxivs = [
+        k for k, v in ids.items() if "qid" in v and len(v["qid"]) == 0
+    ]
+
+    if len(identified_qs) > 0 and len(missing_arxivs) == 0:
+        # The identifiers are already in Wikidata
+        return render_template(
+            "id-to-quickstatements.html", query=query, qs=identified_qs
+        )
+
+    get_metadata_mapping = {
+        "arxiv": get_arxiv_metadata,
+        "doi": get_doi_metadata,
+    }
+
+    for identifier in missing_arxivs:
+        fun = get_metadata_mapping.get(ids[identifier]["type"])
+        if fun:
+            try:
+                metadata = fun(ids[identifier]["id"])
+            except Exception:
+                return render_template(
+                    "id-to-quickstatements.html",
+                    query=query,
+                    qs=identified_qs,
+                    error=True,
+                )
+
+            ids[identifier]["metadata"] = metadata
+            if "error" not in metadata:
+                ids[identifier][
+                    "quickstatements"
+                ] = paper_to_quickstatements(metadata)
+
+    quickstatements = [v.get("quickstatements") for v in ids.values()]
+    quickstatements = list(filter(None, quickstatements))
+
+    failed = [
+        [v["id"], v["metadata"]["error"]]
+        for v in ids.values()
+        if "metadata" in v and "error" in v["metadata"]
+    ]
+
+    # For Quickstatements Version 2 in URL components,
+    # TAB and newline should be replace by | and ||
+    # https://www.wikidata.org/wiki/Help:QuickStatements
+    # Furthermore the '/' also needs to be encoded, but Jinja2 urlencode does
+    # not encode that character.
+    # https://github.com/pallets/jinja/issues/515
+    # Here, we let jinja2 handle the encoding rather than adding an extra
+
+    if (
+        len(identified_qs) == 0
+        and len(quickstatements) == 0
+        and len(failed) == 0
+    ):
+        return render_template(
+            "id-to-quickstatements.html",
+            query=query,
+            qs=identified_qs,
+            quickstatements=quickstatements,
+            error=True,
+            failures=failed,
+        )
+    return render_template(
+        "id-to-quickstatements.html",
+        query=query,
+        qs=identified_qs,
+        quickstatements=quickstatements,
+        failed=failed,
+    )
+
+
+@main.route('/check-crossref')
+def show_check_crossref():
+    """Return HTML rendering for Check Crossref tool.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    See Also
+    --------
+    show_arxiv.
+
+    """
+    return render_template('check-crossref.html')
 
 
 @main.route('/author/' + q_pattern)
@@ -214,6 +408,9 @@ def show_author(q):
         Rendered HTML.
 
     """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
     entities = wb_get_entities([q])
     name = entity_to_name(entities[q])
     if name:
@@ -221,7 +418,8 @@ def show_author(q):
     else:
         first_initial, last_name = '', ''
     return render_template('author.html', q=q, first_initial=first_initial,
-                           last_name=last_name)
+                           last_name=last_name, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/author/' + q_pattern + '/latest-works/rss')
@@ -246,26 +444,8 @@ def show_author_rss(q):
     return response
 
 
-@main.route('/author/' + q_pattern + '/missing')
-def show_author_missing(q):
-    """Return HTML rendering for missing information about specific author.
-
-    Parameters
-    ----------
-    q : str
-        Wikidata item identifier.
-
-    Returns
-    -------
-    html : str
-        Rendered HTML.
-
-    """
-    return render_template('author_missing.html', q=q)
-
-
 @main.route('/author/')
-def show_author_empty():
+def show_author_index():
     """Return author index page.
 
     Returns
@@ -274,7 +454,11 @@ def show_author_empty():
         Rendered index page for author view.
 
     """
-    return render_template('author_empty.html')
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('author-index.html', sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/author/random')
@@ -291,6 +475,31 @@ def show_author_random():
     return redirect(url_for('app.show_author', q=q), code=302)
 
 
+@main.route('/author/' + q1_pattern + '/use/' + q2_pattern)
+def show_author_use(q1, q2):
+    """Return HTML rendering for specific topic and use.
+
+    Parameters
+    ----------
+    q1 : str
+        Wikidata item identifier for author.
+    q2 : str
+        Wikidata item identifier for use.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific author and use.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('author-use.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
+
+
 @main.route('/authors/' + qs_pattern)
 def show_authors(qs):
     """Return HTML rendering for specific authors.
@@ -305,9 +514,22 @@ def show_authors(qs):
     html : str
         Rendered HTML.
 
+    Notes
+    -----
+    In case there is only one author identifier in the URL, then the request is
+    redirected to the "author" aspect.
+
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('authors.html', qs=qs)
+    if len(qs) == 1:
+        return redirect(url_for('app.show_author', q=qs[0]), code=301)
+    else:
+        ep = config['query-server'].get('sparql_endpoint')
+        editurl = config['query-server'].get('sparql_editurl')
+        embedurl = config['query-server'].get('sparql_embedurl')
+        return render_template('authors.html', qs=qs, sparql_endpoint=ep,
+                               sparql_editURL=editurl,
+                               sparql_embedURL=embedurl)
 
 
 @main.route('/award/' + q_pattern)
@@ -325,38 +547,28 @@ def show_award(q):
         Rendered HTML.
 
     """
-    return render_template('award.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('award.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/award/')
-def show_award_empty():
+def show_award_index():
     """Return award index page.
 
     Returns
     -------
     html : str
-        Rendered index page for author view.
+        Rendered index page for award view.
 
     """
-    return render_template('award_empty.html')
-
-
-@main.route('/award/' + q_pattern + '/missing')
-def show_award_missing(q):
-    """Return HTML rendering for missing information about specific award.
-
-    Parameters
-    ----------
-    q : str
-        Wikidata item identifier.
-
-    Returns
-    -------
-    html : str
-        Rendered HTML.
-
-    """
-    return render_template('award_missing.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('award-index.html', sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/cas/<cas>')
@@ -373,7 +585,9 @@ def redirect_cas(cas):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical', q=q), code=302)
-    return render_template('404.html')
+    return render_template(
+        '404.html',
+        error=could_not_find("CAS registry number"))
 
 
 @main.route('/lipidmaps/<lmid>')
@@ -393,7 +607,9 @@ def redirect_lipidmaps(lmid):
             return redirect(url_for('app.show_chemical_class', q=q), code=302)
         else:
             return redirect(url_for('app.show_chemical', q=q), code=302)
-    return render_template('404.html')
+    return render_template(
+        '404.html',
+        error=could_not_find("LIPID MAPS identifier"))
 
 
 @main.route('/atomic-symbol/<symbol>')
@@ -410,7 +626,7 @@ def redirect_atomic_symbol(symbol):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical_element', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("atomic symbol"))
 
 
 @main.route('/atomic-number/<atomic_number>')
@@ -427,7 +643,7 @@ def redirect_atomic_number(atomic_number):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical_element', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("atomic number"))
 
 
 @main.route('/cordis/<cordis>')
@@ -444,7 +660,9 @@ def redirect_cordis(cordis):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_project', q=q), code=302)
-    return render_template('404.html')
+    return render_template(
+        '404.html',
+        error=could_not_find("EU CORDIS project ID"))
 
 
 @main.route('/catalogue/' + q_pattern)
@@ -462,11 +680,15 @@ def show_catalogue(q):
         Rendered HTML page.
 
     """
-    return render_template('catalogue.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('catalogue.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/catalogue/')
-def show_catalogue_empty():
+def show_catalogue_index():
     """Return rendered HTML index page for catalogue.
 
     Returns
@@ -475,11 +697,68 @@ def show_catalogue_empty():
         Rendered HTML index page for catalogue.
 
     """
-    return render_template('catalogue_empty.html')
+    return render_template('catalogue-index.html')
+
+
+@main.route('/dataset/' + q_pattern)
+def show_dataset(q):
+    """Return rendered HTML page for specific dataset.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML page.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('dataset.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/dataset/')
+def show_dataset_index():
+    """Return rendered HTML index page for a dataset.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page for a dataset.
+
+    """
+    return render_template('dataset-index.html')
+
+
+@main.route('/dataset/' + q_pattern + '/export')
+def show_dataset_export(q):
+    """Return HTML rendering for export formats for this dataset.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('dataset-export.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/clinical-trial/')
-def show_clinical_trial_empty():
+def show_clinical_trial_index():
     """Return clinical trial index page.
 
     Returns
@@ -488,7 +767,7 @@ def show_clinical_trial_empty():
         Rendered index page for clinical trials.
 
     """
-    return render_template('clinical_trial_empty.html')
+    return render_template('clinical-trial-index.html')
 
 
 @main.route('/clinical-trial/' + q_pattern)
@@ -506,7 +785,11 @@ def show_clinical_trial(q):
         Rendered HTML for a specific clinical trial.
 
     """
-    return render_template('clinical_trial.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('clinical-trial.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/countries/' + qs_pattern)
@@ -525,11 +808,15 @@ def show_countries(qs):
 
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('countries.html', qs=qs)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('countries.html', qs=qs, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/country/')
-def show_country_empty():
+def show_country_index():
     """Return country index page.
 
     Returns
@@ -538,7 +825,7 @@ def show_country_empty():
         Rendered index page for country view.
 
     """
-    return render_template('country_empty.html')
+    return render_template('country-index.html')
 
 
 @main.route('/country/' + q_pattern)
@@ -556,7 +843,11 @@ def show_country(q):
         Rendered HTML for a specific country.
 
     """
-    return render_template('country.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('country.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/country/' + q1_pattern + '/topic/' + q2_pattern)
@@ -576,7 +867,12 @@ def show_country_topic(q1, q2):
         Rendered HTML for a specific country and topic.
 
     """
-    return render_template('country_topic.html', q1=q1, q2=q2, q=q1)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('country-topic.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/disease/' + q_pattern)
@@ -594,11 +890,15 @@ def show_disease(q):
         Rendered HTML.
 
     """
-    return render_template('disease.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('disease.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/disease/')
-def show_disease_empty():
+def show_disease_index():
     """Return disease index page.
 
     Returns
@@ -607,7 +907,7 @@ def show_disease_empty():
         Rendered index page for author view.
 
     """
-    return render_template('disease_empty.html')
+    return render_template('disease-index.html')
 
 
 @main.route('/doi/<path:doi>')
@@ -620,11 +920,38 @@ def redirect_doi(doi):
         DOI identifier.
 
     """
-    qs = doi_to_qs(doi)
+    normalize_doi = remove_special_characters_url(doi)
+    qs = doi_to_qs(normalize_doi)
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_work', q=q), code=302)
-    return render_template('404.html')
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('404-doi.html', doi=doi, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/doi-prefix/<path:doi>')
+def redirect_doi_prefix(doi):
+    """Detect and redirect for DOI.
+
+    Parameters
+    ----------
+    doi : str
+        DOI identifier.
+
+    """
+    normalize_doi = remove_special_characters_url(doi)
+    qs = doi_prefix_to_qs(normalize_doi)
+    if len(qs) > 0:
+        q = qs[0]
+        return redirect(url_for('app.show_publisher', q=q), code=302)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('404.html', doi=doi, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/event/' + q_pattern)
@@ -642,11 +969,15 @@ def show_event(q):
         Rendered HTML.
 
     """
-    return render_template('event.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('event.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/event/')
-def show_event_empty():
+def show_event_index():
     """Return event index page.
 
     Returns
@@ -655,7 +986,7 @@ def show_event_empty():
         Rendered index page for event view.
 
     """
-    return render_template('event_empty.html')
+    return render_template('event-index.html')
 
 
 @main.route('/event-series/' + q_pattern)
@@ -673,11 +1004,15 @@ def show_event_series(q):
         Rendered HTML.
 
     """
-    return render_template('event_series.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('event-series.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/event-series/')
-def show_event_series_empty():
+def show_event_series_index():
     """Return event series index page.
 
     Returns
@@ -686,7 +1021,7 @@ def show_event_series_empty():
         Rendered index page for event series view.
 
     """
-    return render_template('event_series_empty.html')
+    return render_template('event-series-index.html')
 
 
 @main.route('/faq')
@@ -716,7 +1051,24 @@ def redirect_ncbi_gene(gene):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_gene', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("NCBI gene ID"))
+
+
+@main.route('/uniprot/<protein>')
+def redirect_uniprot(protein):
+    """Detect and redirect for UniProt identifiers.
+
+    Parameters
+    ----------
+    gene : str
+        UniProt identifier.
+
+    """
+    qs = uniprot_to_qs(protein)
+    if len(qs) > 0:
+        q = qs[0]
+        return redirect(url_for('app.show_protein', q=q), code=302)
+    return render_template('404.html', error=could_not_find("UniProt ID"))
 
 
 @main.route('/github/<github>')
@@ -733,7 +1085,7 @@ def redirect_github(github):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_author', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("GitHub username"))
 
 
 @main.route('/inchikey/<inchikey>')
@@ -750,7 +1102,12 @@ def redirect_inchikey(inchikey):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical', q=q), code=302)
-    return render_template('404_chemical.html', inchikey=inchikey)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('404-chemical.html', inchikey=inchikey,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/issn/<issn>')
@@ -767,11 +1124,47 @@ def redirect_issn(issn):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_venue', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("ISSN serial ID"))
+
+
+@main.route('/language/' + q_pattern)
+def show_language(q):
+    """Return HTML rendering for specific language.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific language.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('language.html', q=q, datetime=datetime,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
+
+
+@main.route('/language')
+def show_language_index():
+    """Return award index page.
+
+    Returns
+    -------
+    html : str
+        Rendered index page for language view.
+
+    """
+    return render_template('language-index.html')
 
 
 @main.route('/lexeme/')
-def show_lexeme_empty():
+def show_lexeme_index():
     """Return lexeme index page.
 
     Returns
@@ -780,7 +1173,7 @@ def show_lexeme_empty():
         Rendered index page for lexeme view.
 
     """
-    return render_template('lexeme_empty.html')
+    return render_template('lexeme-index.html')
 
 
 @main.route('/lexeme/' + l_pattern)
@@ -798,11 +1191,50 @@ def show_lexeme(lexeme):
         Rendered HTML for a specific lexeme.
 
     """
-    return render_template('lexeme.html', lexeme=lexeme)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('lexeme.html', lexeme=lexeme, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/license/' + q_pattern)
+def show_license(q):
+    """Return HTML rendering for specific license.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific license.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('license.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/license/')
+def show_license_index():
+    """Return license index page.
+
+    Returns
+    -------
+    html : str
+        Rendered index page for license view.
+
+    """
+    return render_template('license-index.html')
 
 
 @main.route('/location/')
-def show_location_empty():
+def show_location_index():
     """Return location index page.
 
     Returns
@@ -811,7 +1243,7 @@ def show_location_empty():
         Rendered index page for location view.
 
     """
-    return render_template('location_empty.html')
+    return render_template('location-index.html')
 
 
 @main.route('/location/' + q_pattern)
@@ -829,7 +1261,11 @@ def show_location(q):
         Rendered HTML for a specific location.
 
     """
-    return render_template('location.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('location.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/location/' + q1_pattern + '/topic/' + q2_pattern)
@@ -849,7 +1285,12 @@ def show_location_topic(q1, q2):
         Rendered HTML for a specific location and topic.
 
     """
-    return render_template('location_topic.html', q1=q1, q2=q2, q=q1)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('location-topic.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/mesh/<meshid>')
@@ -868,7 +1309,24 @@ def redirect_mesh(meshid):
         class_ = q_to_class(q)
         method = 'app.show_' + class_
         return redirect(url_for(method, q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("MeSH ID"))
+
+
+@main.route('/omim/<omimID>')
+def redirect_omim(omimID):
+    """Detect and redirect for OMIM identifiers.
+
+    Parameters
+    ----------
+    omimID : str
+        OMIM identifier.
+
+    """
+    qs = omim_to_qs(omimID)
+    if len(qs) > 0:
+        q = qs[0]
+        return redirect(url_for('app.show_disease', q=q), code=302)
+    return render_template('404.html', error=could_not_find("OMIM ID"))
 
 
 @main.route('/orcid/<orcid>')
@@ -885,7 +1343,7 @@ def redirect_orcid(orcid):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_author', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("ORCID iD"))
 
 
 @main.route('/pubchem/<cid>')
@@ -902,7 +1360,9 @@ def redirect_pubchem(cid):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_chemical', q=q), code=302)
-    return render_template('404.html')
+    return render_template(
+        '404.html',
+        error=could_not_find("compound identifier"))
 
 
 @main.route('/pubmed/<pmid>')
@@ -916,10 +1376,7 @@ def redirect_pubmed(pmid):
 
     """
     qs = pubmed_to_qs(pmid)
-    if len(qs) > 0:
-        q = qs[0]
-        return redirect(url_for('app.show_work', q=q), code=302)
-    return render_template('404.html')
+    return _render_work_qs(qs, "PubMed")
 
 
 @main.route('/ncbi-taxon/<taxon>')
@@ -936,7 +1393,7 @@ def redirect_ncbi_taxon(taxon):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_taxon', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("NCBI taxon ID"))
 
 
 @main.route('/wikipathways/<wpid>')
@@ -953,7 +1410,7 @@ def redirect_wikipathways(wpid):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_pathway', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("WikiPathways ID"))
 
 
 @main.route('/ror/<rorid>')
@@ -970,7 +1427,7 @@ def redirect_ror(rorid):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_organization', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("ROR ID"))
 
 
 @main.route('/viaf/<viaf>')
@@ -987,7 +1444,82 @@ def redirect_viaf(viaf):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.show_author', q=q), code=302)
-    return render_template('404.html')
+    return render_template('404.html', error=could_not_find("VIAF ID"))
+
+
+@main.route('/openalex/<openalex>')
+def redirect_openalex(openalex):
+    """Return HTML rendering for OpenAlex.
+
+    Parameters
+    ----------
+    openalex : str
+        OpenAlex identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    Notes
+    -----
+    This function will triage based on the first letter in the OpenAlex
+    identifier: author (A), topic (C), organization (I), venue (V) and
+    work (W).
+
+    """
+    qs = identifier_to_qs("P10283", openalex)
+    if len(qs) > 0:
+        q = qs[0]
+        if openalex.startswith('A'):
+            return redirect(url_for('app.show_author', q=q), code=302)
+        elif openalex.startswith('C'):
+            return redirect(url_for('app.show_topic', q=q), code=302)
+        elif openalex.startswith('I'):
+            return redirect(url_for('app.show_organization', q=q), code=302)
+        elif openalex.startswith('V'):
+            return redirect(url_for('app.show_venue', q=q), code=302)
+        elif openalex.startswith('W'):
+            return redirect(url_for('app.show_work', q=q), code=302)
+        else:
+            # Fallback
+            return redirect(url_for('app.redirect_q', q=q), code=302)
+    return render_template('404.html', error=could_not_find("OpenAlex ID"))
+
+
+@main.route('/ontology/')
+def show_ontology_index():
+    """Return rendered HTML index page for ontology.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for for ontology.
+
+    """
+    return render_template('ontology-index.html')
+
+
+@main.route('/ontology/' + q_pattern)
+def show_ontology(q):
+    """Return rendered HTML page for a specific ontology.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('ontology.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/organization/' + q_pattern)
@@ -1005,11 +1537,15 @@ def show_organization(q):
         Rendered HTML.
 
     """
-    return render_template('organization.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('organization.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/organization/')
-def show_organization_empty():
+def show_organization_index():
     """Return rendered HTML index page for organization.
 
     Returns
@@ -1018,7 +1554,7 @@ def show_organization_empty():
         Rendered HTML for for organization.
 
     """
-    return render_template('organization_empty.html')
+    return render_template('organization-index.html')
 
 
 @main.route('/organization/' + q_pattern + '/latest-works/rss')
@@ -1060,25 +1596,37 @@ def show_organization_topic(q1, q2):
         Rendered HTML for a specific organization and topic.
 
     """
-    return render_template('organization_topic.html', q1=q1, q2=q2, q=q1)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('organization-topic.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
-@main.route('/organization/' + q_pattern + '/missing')
-def show_organization_missing(q):
-    """Return HTML rendering for missing information about an organization.
+@main.route('/organization/' + q1_pattern + '/use/' + q2_pattern)
+def show_organization_use(q1, q2):
+    """Return HTML rendering for specific organization and use.
 
     Parameters
     ----------
-    q : str
-        Wikidata item identifier for an organization.
+    q1 : str
+        Wikidata item identifier for organization.
+    q2 : str
+        Wikidata item identifier for use
 
     Returns
     -------
     html : str
-        Rendered HTML.
+        Rendered HTML for a specific organization and use.
 
     """
-    return render_template('organization_missing.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('organization-use.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/organizations/' + qs_pattern)
@@ -1097,7 +1645,12 @@ def show_organizations(qs):
 
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('organizations.html', qs=qs)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('organizations.html', qs=qs,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/printer/' + q_pattern)
@@ -1115,11 +1668,15 @@ def show_printer(q):
         Rendered HTML.
 
     """
-    return render_template('printer.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('printer.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/printer/')
-def show_printer_empty():
+def show_printer_index():
     """Return printer index page.
 
     Returns
@@ -1128,7 +1685,7 @@ def show_printer_empty():
         Rendered index page for printer view.
 
     """
-    return render_template('printer_empty.html')
+    return render_template('printer-index.html')
 
 
 @main.route('/protein/' + q_pattern)
@@ -1146,11 +1703,15 @@ def show_protein(q):
         Rendered HTML.
 
     """
-    return render_template('protein.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('protein.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/protein/')
-def show_protein_empty():
+def show_protein_index():
     """Return protein index page.
 
     Returns
@@ -1159,7 +1720,7 @@ def show_protein_empty():
         Rendered index page for protein view.
 
     """
-    return render_template('protein_empty.html')
+    return render_template('protein-index.html')
 
 
 @main.route('/project/' + q_pattern)
@@ -1177,11 +1738,15 @@ def show_project(q):
         Rendered HTML.
 
     """
-    return render_template('project.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('project.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/project/')
-def show_project_empty():
+def show_project_index():
     """Return project index page.
 
     Returns
@@ -1190,7 +1755,7 @@ def show_project_empty():
         Rendered index page for search view.
 
     """
-    return render_template('project_empty.html')
+    return render_template('project-index.html')
 
 
 @main.route('/search')
@@ -1202,14 +1767,39 @@ def show_search():
     html : str
         Rendered index page for search view.
 
+    Notes
+    -----
+    If a DOI pattern is matched for the search query then the search page is
+    redirected to the DOI redirect page.
+
     """
     query = request.args.get('q', '')
+    page = request.args.get('page', 0)
+
+    # Redirect to DOI page if the search query looks like a DOI
+    dois = DOI_PATTERN.findall(query)
+    if len(dois) > 0:
+        doi = dois[0]
+        return redirect(url_for('app.redirect_doi', doi=doi), code=302)
+
+    arxivs = string_to_arxivs(query)
+    if arxivs:
+        return redirect(url_for('app.show_id_to_quickstatements',
+                                arxiv=query), code=302)
+
+    search_results = []
+    next_page = -1
+    prev_page = -1
+
     if query:
-        search_results = search(query)
-    else:
-        search_results = []
-    return render_template('search.html',
-                           query=query, search_results=search_results)
+        data = search(query, page)
+        search_results = data["results"]
+        next_page = data.get("next_page", -1)
+        prev_page = data.get("prev_page", -1)
+
+    return render_template(
+        'search.html', query=query, search_results=search_results,
+        next_page=next_page, prev_page=prev_page)
 
 
 @main.route('/gene/' + q_pattern)
@@ -1227,11 +1817,15 @@ def show_gene(q):
         Rendered HTML.
 
     """
-    return render_template('gene.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('gene.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/gene/')
-def show_gene_empty():
+def show_gene_index():
     """Return gene index page.
 
     Returns
@@ -1240,7 +1834,7 @@ def show_gene_empty():
         Rendered index page for gene view.
 
     """
-    return render_template('gene_empty.html')
+    return render_template('gene-index.html')
 
 
 @main.route('/taxon/' + q_pattern)
@@ -1258,11 +1852,15 @@ def show_taxon(q):
         Rendered HTML.
 
     """
-    return render_template('taxon.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('taxon.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/taxon/')
-def show_taxon_empty():
+def show_taxon_index():
     """Return taxon index page.
 
     Returns
@@ -1271,7 +1869,7 @@ def show_taxon_empty():
         Rendered index page for taxon view.
 
     """
-    return render_template('taxon_empty.html')
+    return render_template('taxon-index.html')
 
 
 @main.route('/q-to-bibliography-templates')
@@ -1287,20 +1885,22 @@ def show_q_to_bibliography_templates():
     q_ = request.args.get('q')
 
     if not q_:
-        return render_template('q_to_bibliography_templates.html')
-
-    current_app.logger.debug("q: {}".format(q_))
+        return render_template('q-to-bibliography-templates.html')
 
     q = sanitize_q(q_)
     if not q:
         # Could not identify a wikidata identifier
-        return render_template('q_to_bibliography_templates.html')
+        return render_template('q-to-bibliography-templates.html')
 
     wikitext = q_to_bibliography_templates(q)
 
-    return render_template('q_to_bibliography_templates.html',
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('q-to-bibliography-templates.html',
                            q=q,
-                           wikitext=wikitext)
+                           wikitext=wikitext, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/software/' + q_pattern)
@@ -1318,11 +1918,15 @@ def show_software(q):
         Rendered HTML.
 
     """
-    return render_template('software.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('software.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/software/')
-def show_software_empty():
+def show_software_index():
     """Return software index page.
 
     Returns
@@ -1331,7 +1935,29 @@ def show_software_empty():
         Rendered index page for author view.
 
     """
-    return render_template('software_empty.html')
+    return render_template('software-index.html')
+
+
+@main.route('/software/' + q_pattern + '/export')
+def show_software_export(q):
+    """Return HTML rendering for export formats for this software.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('software-export.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/text-to-topics', methods=['POST', 'GET'])
@@ -1356,10 +1982,10 @@ def show_text_to_topics():
         assert False
 
     if not current_app.text_to_topic_q_text_enabled:
-        return render_template('text_to_topics.html', enabled=False)
+        return render_template('text-to-topics.html', enabled=False)
 
     if not text:
-        return render_template('text_to_topics.html', enabled=True)
+        return render_template('text-to-topics.html', enabled=True)
 
     qs_list = current_app.text_to_topic_q_text.text_to_topic_qs(text)
     qs = ",".join(set(qs_list))
@@ -1382,7 +2008,12 @@ def show_topic(q):
         Rendered HTML.
 
     """
-    return render_template('topic.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('topic.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/topic/' + q_pattern + '/latest-works/rss')
@@ -1408,7 +2039,7 @@ def show_topic_rss(q):
 
 
 @main.route('/topic/')
-def show_topic_empty():
+def show_topic_index():
     """Return rendered HTML index page for topic.
 
     Returns
@@ -1417,7 +2048,32 @@ def show_topic_empty():
         Rendered HTML index page for topic.
 
     """
-    return render_template('topic_empty.html')
+    return render_template('topic-index.html')
+
+
+@main.route('/topic/' + q1_pattern + '/use/' + q2_pattern)
+def show_topic_use(q1, q2):
+    """Return HTML rendering for specific topic and use.
+
+    Parameters
+    ----------
+    q1 : str
+        Wikidata item identifier for topic.
+    q2 : str
+        Wikidata item identifier for use.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific topic and use.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('topic-use.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/topics/' + qs_pattern)
@@ -1434,27 +2090,135 @@ def show_topics(qs):
     html : str
         Rendered HTML.
 
+    Notes
+    -----
+    In case there is only one topic identifier in the URL, then the request is
+    redirected to the "topic" aspect.
+
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('topics.html', qs=qs)
+    if len(qs) == 1:
+        return redirect(url_for('app.show_topic', q=qs[0]), code=301)
+    else:
+        ep = config['query-server'].get('sparql_endpoint')
+        editurl = config['query-server'].get('sparql_editurl')
+        embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('topics.html', qs=qs, sparql_endpoint=ep,
+                           sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
-@main.route('/topic/' + q_pattern + '/missing')
-def show_topic_missing(q):
-    """Return rendered HTML for missing page for topic.
+@main.route('/podcast/' + q_pattern)
+def show_podcast(q):
+    """Return html render page for a specific podcast.
 
     Parameters
     ----------
     q : str
-        Wikidata item identifiers.
+        Wikidata item identifier.
 
     Returns
     -------
     html : str
-        Rendered HTML index page for topic.
+        Rendered HTML.
 
     """
-    return render_template('topic_missing.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template(
+        'podcast.html', q=q, sparql_endpoint=ep, sparql_editURL=editurl,
+        sparql_embedURL=embedurl)
+
+
+@main.route('/podcast-season/' + q_pattern)
+def show_podcast_season(q):
+    """Return html render page for a specific podcast season.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template(
+        'podcast-season.html', q=q, sparql_endpoint=ep, sparql_editURL=editurl,
+        sparql_embedURL=embedurl)
+
+
+@main.route('/podcast-episode/' + q_pattern)
+def show_podcast_episode(q):
+    """Return html render page for a specific podcast episode.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template(
+        'podcast-episode.html', q=q, sparql_endpoint=ep,
+        sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/podcast/random')
+def show_podcast_random():
+    """Redirect to random podcast.
+
+    Returns
+    -------
+    reponse : werkzeug.wrappers.Response
+        Redirect
+
+    """
+    q = random_podcast()
+    return redirect(url_for('app.show_podcast', q=q), code=302)
+
+
+@main.route('/language/' + q_pattern + '/podcast')
+def show_podcast_in_language(q):
+    """Redirect to random podcast.
+
+    Returns
+    -------
+    reponse : werkzeug.wrappers.Response
+        Redirect
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('podcast-language.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/podcast/')
+def show_podcast_index():
+    """Return rendered HTML index page for podcasts.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page for podcasts.
+
+    """
+    return render_template('podcast-index.html')
 
 
 @main.route('/chemical/' + q_pattern)
@@ -1474,15 +2238,18 @@ def show_chemical(q):
     """
     entities = wb_get_entities([q])
     smiles = entity_to_smiles(entities[q])
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
     return render_template(
         'chemical.html',
-        q=q,
-        smiles=smiles,
+        q=q, sparql_endpoint=ep, sparql_editURL=editurl,
+        sparql_embedURL=embedurl, smiles=smiles,
         third_parties_enabled=current_app.third_parties_enabled)
 
 
 @main.route('/chemical/')
-def show_chemical_empty():
+def show_chemical_index():
     """Return rendered HTML index page for chemical.
 
     Returns
@@ -1491,20 +2258,21 @@ def show_chemical_empty():
         Rendered HTML index page for chemical.
 
     """
-    return render_template('chemical_empty.html')
+    return render_template('chemical-index.html')
 
 
 @main.route('/chemical/missing')
-def show_chemicals_missing():
-    """Return rendered HTML index page for missing information for chemicals.
+@main.route('/chemical/curation')
+def show_chemical_index_curation():
+    """Return rendered HTML index page for curation page for chemicals.
 
     Returns
     -------
     html : str
-        Rendered HTML index page for missing information for chemicals.
+        Rendered HTML index page for curation page for chemicals.
 
     """
-    return render_template('chemicals_missing.html')
+    return render_template('chemical-index-curation.html')
 
 
 @main.route('/chemical-element/' + q_pattern)
@@ -1522,11 +2290,15 @@ def show_chemical_element(q):
         Rendered HTML.
 
     """
-    return render_template('chemical_element.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('chemical-element.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/chemical-element/')
-def show_chemical_element_empty():
+def show_chemical_element_index():
     """Return rendered HTML index page for chemical element.
 
     Returns
@@ -1535,7 +2307,7 @@ def show_chemical_element_empty():
         Rendered HTML index page for chemical element.
 
     """
-    return render_template('chemical_element_empty.html')
+    return render_template('chemical-element-index.html')
 
 
 @main.route('/chemical-class/' + q_pattern)
@@ -1553,11 +2325,20 @@ def show_chemical_class(q):
         Rendered HTML.
 
     """
-    return render_template('chemical_class.html', q=q)
+    entities = wb_get_entities([q])
+    smiles = entity_to_smiles(entities[q])
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template(
+        'chemical-class.html',
+        q=q, sparql_endpoint=ep, sparql_editURL=editurl,
+        sparql_embedURL=embedurl, smiles=smiles,
+        third_parties_enabled=current_app.third_parties_enabled)
 
 
 @main.route('/chemical-class/')
-def show_chemical_class_empty():
+def show_chemical_class_index():
     """Return rendered HTML index page for a specific class of chemicals.
 
     Returns
@@ -1566,7 +2347,7 @@ def show_chemical_class_empty():
         Rendered HTML index page for a specific class of chemicals.
 
     """
-    return render_template('chemical_class_empty.html')
+    return render_template('chemical-class-index.html')
 
 
 @main.route('/twitter/<twitter>')
@@ -1584,7 +2365,9 @@ def redirect_twitter(twitter):
     if len(qs) > 0:
         q = qs[0]
         return redirect(url_for('app.redirect_q', q=q), code=302)
-    return render_template('404.html')
+    return render_template(
+        '404.html',
+        error=could_not_find("Twitter username"))
 
 
 @main.route('/venue/' + q_pattern)
@@ -1602,30 +2385,16 @@ def show_venue(q):
         Rendered HTML page.
 
     """
-    return render_template('venue.html', q=q)
-
-
-@main.route('/venue/' + q_pattern + '/missing')
-def show_venue_missing(q):
-    """Return HTML rendering for missing information about specific venue.
-
-    Parameters
-    ----------
-    q : str
-        Wikidata item identifier.
-
-    Returns
-    -------
-    html : str
-        Rendered HTML.
-
-    """
-    return render_template('venue_missing.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('venue.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/venue/' + q_pattern + '/cito')
 def show_venue_cito(q):
-    """Return HTML rendering for Citation Typing Ontology annotation of citations.
+    """Return HTML rendering for Citation Typing Ontology annotation.
 
     Parameters
     ----------
@@ -1638,12 +2407,37 @@ def show_venue_cito(q):
         Rendered HTML.
 
     """
-    return render_template('venue_cito.html', q=q)
+    return redirect('/venue/' + q + '#cito')
+
+
+@main.route('/venue/' + q1_pattern + '/use/' + q2_pattern)
+def show_venue_use(q1, q2):
+    """Return HTML rendering for specific venue and use.
+
+    Parameters
+    ----------
+    q1 : str
+        Wikidata item identifier for venue.
+    q2 : str
+        Wikidata item identifier for use.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML for a specific venue and use.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('venue-use.html', q1=q1, q2=q2, q=q1,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
 
 
 @main.route('/work/' + q_pattern + '/cito')
 def show_work_cito(q):
-    """Return HTML rendering for Citation Typing Ontology annotation of citations.
+    """Return HTML rendering for Citation Typing Ontology annotation.
 
     Parameters
     ----------
@@ -1656,7 +2450,68 @@ def show_work_cito(q):
         Rendered HTML.
 
     """
-    return render_template('work_cito.html', q=q)
+    return redirect('/work/' + q + '#cito')
+
+
+@main.route('/work/' + q_pattern + '/cito/' + q2_pattern)
+def show_work_cito_intention(q, q2):
+    """Return HTML rendering for Citation Typing Ontology annotation.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier for the work.
+    q2 : str
+        Wikidata item identifier for the citation intention.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('work-cito-intention.html', q=q, q2=q2,
+                           sparql_endpoint=ep, sparql_editURL=editurl,
+                           sparql_embedURL=embedurl)
+
+
+@main.route('/work/' + q_pattern + '/export')
+def show_work_export(q):
+    """Return HTML rendering for export formats for this work.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('work-export.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/work/random')
+def show_work_random():
+    """Redirect to random work.
+
+    Returns
+    -------
+    reponse : werkzeug.wrappers.Response
+        Redirect
+
+    """
+    q = random_work()
+    return redirect(url_for('app.show_work', q=q), code=302)
 
 
 @main.route('/cito/' + q_pattern)
@@ -1674,11 +2529,15 @@ def show_cito(q):
         Rendered HTML.
 
     """
-    return render_template('cito.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('cito.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/cito/')
-def show_cito_empty():
+def show_cito_index():
     """Return rendered HTML about CiTO annotation in Wikidata.
 
     Return rendered HTML index page with general info about CiTO annotation
@@ -1691,7 +2550,11 @@ def show_cito_empty():
         in Wikidata.
 
     """
-    return render_template('cito_empty.html')
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('cito-index.html', sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/venue/' + q_pattern + '/latest-works/rss')
@@ -1717,7 +2580,7 @@ def show_venue_rss(q):
 
 
 @main.route('/venue/')
-def show_venue_empty():
+def show_venue_index():
     """Return rendered HTML index page for venue.
 
     Returns
@@ -1726,7 +2589,7 @@ def show_venue_empty():
         Rendered HTML index page for venue.
 
     """
-    return render_template('venue_empty.html')
+    return render_template('venue-index.html')
 
 
 @main.route('/venues/' + qs_pattern)
@@ -1745,7 +2608,11 @@ def show_venues(qs):
 
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('venues.html', qs=qs)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('venues.html', qs=qs, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/series/' + q_pattern)
@@ -1763,11 +2630,15 @@ def show_series(q):
         Rendered HTML for specific series.
 
     """
-    return render_template('series.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('series.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/series/')
-def show_series_empty():
+def show_series_index():
     """Return rendered HTML index page for series.
 
     Returns
@@ -1776,7 +2647,42 @@ def show_series_empty():
         Rendered HTML index page for series.
 
     """
-    return render_template('series_empty.html')
+    return render_template('series-index.html')
+
+
+@main.route('/complex/' + q_pattern)
+def show_complex(q):
+    """Return html render page for specific biological complex.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('complex.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
+@main.route('/complex/')
+def show_complex_index():
+    """Return rendered HTML index page for complex.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page for complex.
+
+    """
+    return render_template('complex-index.html')
 
 
 @main.route('/pathway/' + q_pattern)
@@ -1794,11 +2700,15 @@ def show_pathway(q):
         Rendered HTML.
 
     """
-    return render_template('pathway.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('pathway.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/pathway/')
-def show_pathway_empty():
+def show_pathway_index():
     """Return rendered HTML index page for pathway.
 
     Returns
@@ -1807,7 +2717,7 @@ def show_pathway_empty():
         Rendered HTML index page for pathway.
 
     """
-    return render_template('pathway_empty.html')
+    return render_template('pathway-index.html')
 
 
 @main.route('/publisher/' + q_pattern)
@@ -1820,11 +2730,15 @@ def show_publisher(q):
        Rendered HTML page for specific publisher.
 
     """
-    return render_template('publisher.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('publisher.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/publisher/')
-def show_publisher_empty():
+def show_publisher_index():
     """Return rendered HTML index page for publisher.
 
     Returns
@@ -1833,21 +2747,49 @@ def show_publisher_empty():
         Rendered HTML for publisher index page.
 
     """
-    return render_template('publisher_empty.html')
+    return render_template('publisher-index.html')
 
 
 @main.route('/robots.txt')
 def show_robots_txt():
     """Return robots.txt file.
 
+    A robots.txt file is returned that allows bots to index Scholia.
+
     Returns
     -------
     response : flask.Response
-        Rendered HTML for publisher index page.
+        Rendered plain text with robots.txt content.
+
+    Notes
+    -----
+    The default robots.txt for Toolforge hosted tools is
+
+    User-agent: *
+    Disallow: /
+
+    We would like bots to index, but not crawl Scholia. Crawling is
+    also controlled by the HTML meta tag 'robots' that is set to the
+    content: noindex, nofollow on all pages.
+
+    User-agent: *
+    Allow: /
+
+    This results in too much crawling or load on the Toolforge
+    infrastructure then it should be changed.
+
+    Given that most of the content on Scholia does not get indexed,
+    there are little reason to index Scholia's pages, perhaps other
+    than the main page and the about page.
+
+    Thus for now the `robots.txt` is set to
+
+    User-agent: *
+    Disallow: /
 
     """
     ROBOTS_TXT = ('User-agent: *\n'
-                  'Disallow: /scholia/\n')
+                  'Disallow: /\n')
     return Response(ROBOTS_TXT, mimetype="text/plain")
 
 
@@ -1866,11 +2808,15 @@ def show_sponsor(q):
         Rendered HTML page for specific sponsor.
 
     """
-    return render_template('sponsor.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('sponsor.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/sponsor/')
-def show_sponsor_empty():
+def show_sponsor_index():
     """Return rendered index page for sponsor.
 
     Returns
@@ -1879,7 +2825,7 @@ def show_sponsor_empty():
         Rendered HTML page for sponsor index page.
 
     """
-    return render_template('sponsor_empty.html')
+    return render_template('sponsor-index.html')
 
 
 @main.route('/sponsor/' + q_pattern + '/latest-works/rss')
@@ -1919,11 +2865,15 @@ def show_use(q):
         Rendered HTML.
 
     """
-    return render_template('use.html', q=q)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('use.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/use/')
-def show_use_empty():
+def show_use_index():
     """Return use index page.
 
     Returns
@@ -1932,7 +2882,39 @@ def show_use_empty():
         Rendered index page for author view.
 
     """
-    return render_template('use_empty.html')
+    return render_template('use-index.html')
+
+
+@main.route('/uses/' + qs_pattern)
+def show_uses(qs):
+    """Return HTML rendering for multiple specific topics.
+
+    Parameters
+    ----------
+    qs : str
+        Wikidata item identifiers.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    Notes
+    -----
+    In case there is only one use identifier in the URL, then the request is
+    redirected to the "use" aspect.
+
+    """
+    qs = Q_PATTERN.findall(qs)
+    if len(qs) == 1:
+        return redirect(url_for('app.show_use', q=qs[0]), code=301)
+    else:
+        ep = config['query-server'].get('sparql_endpoint')
+        editurl = config['query-server'].get('sparql_editurl')
+        embedurl = config['query-server'].get('sparql_embedurl')
+        return render_template('uses.html', qs=qs, sparql_endpoint=ep,
+                               sparql_editURL=editurl,
+                               sparql_embedURL=embedurl)
 
 
 @main.route('/work/' + q_pattern)
@@ -1954,11 +2936,15 @@ def show_work(q):
         dois = q_to_dois(q)
     except Exception:
         dois = []
-    return render_template('work.html', q=q, dois=dois)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('work.html', q=q, dois=dois, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/work/')
-def show_work_empty():
+def show_work_index():
     """Return rendered index page for work.
 
     Returns
@@ -1967,7 +2953,7 @@ def show_work_empty():
         Rendered HTML page for work index page.
 
     """
-    return render_template('work_empty.html')
+    return render_template('work-index.html')
 
 
 @main.route('/works/' + qs_pattern)
@@ -1986,7 +2972,11 @@ def show_works(qs):
 
     """
     qs = Q_PATTERN.findall(qs)
-    return render_template('works.html', qs=qs)
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('works.html', qs=qs, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
 
 
 @main.route('/about')
@@ -2002,7 +2992,109 @@ def show_about():
     return render_template('about.html')
 
 
+@main.route('/wikiproject/')
+def show_wikiproject_index():
+    """Return rendered HTML index page for wikiproject.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML index page for wikiproject.
+
+    """
+    return render_template('wikiproject-index.html')
+
+
+@main.route('/wikiproject/' + q_pattern)
+def show_wikiproject(q):
+    """Return rendered HTML page for specific WikiProject.
+
+    Parameters
+    ----------
+    q : str
+        Wikidata item identifier
+
+    Returns
+    -------
+    html : str
+        Rendered HTML page for specific WikiProject.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    return render_template('wikiproject.html', q=q, sparql_endpoint=ep,
+                           sparql_editURL=editurl, sparql_embedURL=embedurl)
+
+
 @main.route('/favicon.ico')
 def show_favicon():
     """Detect and redirect for the favicon.ico."""
     return redirect(url_for('static', filename='favicon/favicon.ico'))
+
+
+@main.route('/' + ASPECT_PATTERN + '/' + q_pattern + '/missing')
+@main.route('/' + ASPECT_PATTERN + '/' + q_pattern + '/curation')
+def show_aspect_missing(aspect, q):
+    """Redirects to the new HTML rendering for missing information.
+
+    Parameters
+    ----------
+    aspect: str
+        Aspect variable
+    q : str
+        Wikidata item identifier.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    """
+    ep = config['query-server'].get('sparql_endpoint')
+    editurl = config['query-server'].get('sparql_editurl')
+    embedurl = config['query-server'].get('sparql_embedurl')
+    try:
+        return render_template('{aspect}-curation.html'.format(aspect=aspect),
+                               q=q, sparql_endpoint=ep, sparql_editURL=editurl,
+                               sparql_embedURL=embedurl)
+    except TemplateNotFound:
+        return render_template('q_curation.html', q=q, aspect=aspect,
+                               sparql_endpoint=ep, sparql_editURL=editurl,
+                               sparql_embedURL=embedurl)
+
+
+def page_not_found(e):
+    """Show 404 page.
+
+    Render and return a page for a not found URL.
+
+    Returns
+    -------
+    html : str
+        Rendered HTML.
+
+    Notes
+    -----
+    This function can be used as 404 error handler.
+
+    """
+    return render_template("404.html", error=""), 404
+
+
+def could_not_find(name):
+    """Make sentence of something missing.
+
+    Parameters
+    ----------
+    name : str
+        Name for an identifier.
+
+    Returns
+    -------
+    sentence : str
+        Sentence with statement that identifier could not be converted to a Q
+        number.
+
+    """
+    return "Could not convert " + name + " into Q number."
